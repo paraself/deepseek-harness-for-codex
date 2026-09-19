@@ -130,7 +130,7 @@ Both `start_service` and `start_run` default `openBrowser` to `false`, and the p
 | --- | --- | --- |
 | `DSH_MCP_DATA_DIR` | `~/.deep-seek-harness-mcp` | Persistent per-workspace Harness Web settings and sessions. |
 | `DSH_MCP_WORKSPACE_ROOTS` | unrestricted | Platform-delimited absolute roots that may be passed to `start_run`. |
-| `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.0-rc.6` | Exact npm package used for the local Harness process. |
+| `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.5-rc.2` | Exact npm package used for the local Harness process. |
 | `DSH_MCP_NPX_COMMAND` | `npx` | Alternate path to `npx`. |
 | `DSH_MCP_WEB_URL` | unset | Full loopback authentication URL printed at DSH startup; attach to that service instead of starting DSH. |
 | `DSH_PERMISSION_MODE` | `workspace-write` | DeepSeek Harness permission mode. |

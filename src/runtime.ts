@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 
-export const DEFAULT_HARNESS_PACKAGE = "@deepseek-ai/dsh@0.1.0-rc.6";
+export const DEFAULT_HARNESS_PACKAGE = "@deepseek-ai/dsh@0.1.5-rc.2";
 
 /** A shell-free command specification for one local Harness process. */
 export interface HarnessCommand {

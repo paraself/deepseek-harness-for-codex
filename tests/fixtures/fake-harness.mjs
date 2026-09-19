@@ -32,17 +32,25 @@ const server = createServer((request, response) => {
   request.on("end", () => {
     const message = JSON.parse(body);
     const { method, payload, rpcId } = message;
+    if (url.pathname !== `/api/${method}`) {
+      response.writeHead(404, { "content-type": "text/plain" });
+      response.end("not found");
+      return;
+    }
+    const args = payload.args;
     let value;
-    if (method === "workspace.create") {
+    if (method === "workspace/create") {
       value = { workspace: { workspaceId: `workspace-${nextWorkspace++}` }, created: true };
-    } else if (method === "session.create") {
+    } else if (method === "session/create") {
       const sessionId = `session-${nextSession++}`;
       sessions.set(sessionId, { running: false, events: [], task: "" });
       value = { sessionId };
-    } else if (method === "session.prompt") {
-      const session = sessions.get(payload.sessionId);
+    } else if (method === "session/prompt") {
+      const prompt = args.request;
+      if (typeof prompt.requestId !== "string" || prompt.requestId.length === 0) throw new Error("missing requestId");
+      const session = sessions.get(prompt.sessionId);
       session.running = true;
-      session.task = payload.content[0].text;
+      session.task = prompt.content[0].text;
       session.events.push({ event: { type: "turn/start", seq: session.events.length, data: {} } });
       setTimeout(() => {
         session.events.push({
@@ -54,14 +62,21 @@ const server = createServer((request, response) => {
         });
         session.events.push({ event: { type: "turn/end", seq: session.events.length, data: { reason: "stop" } } });
         session.running = false;
-      }, 40);
+      }, 200);
       value = { accepted: true };
-    } else if (method === "session.list") {
-      value = { items: [...sessions].map(([sessionId, session]) => ({ sessionId, running: session.running, blank: session.events.length === 0 })) };
-    } else if (method === "session.history") {
-      value = { events: sessions.get(payload.sessionId)?.events ?? [], hasMore: false };
-    } else if (method === "session.cancel") {
-      const session = sessions.get(payload.sessionId);
+    } else if (method === "session/list") {
+      value = { items: [...sessions].map(([sessionId, session]) => ({
+        sessionId,
+        running: session.running,
+        blank: session.events.length === 0,
+        projections: { asOfSeq: session.events.at(-1)?.event.seq ?? -1, values: {} },
+      })) };
+    } else if (method === "session/page") {
+      const page = args.request;
+      const events = sessions.get(page.address.sessionId)?.events ?? [];
+      value = { records: events.filter(({ event }) => event.seq <= page.throughSeq), hasMore: false };
+    } else if (method === "session/cancel") {
+      const session = sessions.get(args.request.sessionId);
       session.running = false;
       session.events.push({ event: { type: "turn/end", seq: session.events.length, data: { reason: "cancelled" } } });
       value = { accepted: true };

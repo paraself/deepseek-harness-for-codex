@@ -57,6 +57,7 @@ interface SessionSummary {
   sessionId: string;
   running: boolean;
   blank: boolean;
+  projections?: { asOfSeq: number };
 }
 
 interface HistoryEvent {
@@ -220,34 +221,36 @@ export class RunManager {
     const serviceSnapshot = await this.startService({ workspace: input.workspace, openBrowser: false });
     if (serviceSnapshot.webUrl === null) throw new Error("Harness Web service did not provide a URL.");
     const service = this.requireService(serviceSnapshot.serviceId);
-    const workspaceResult = await this.rpc<{ workspace: { workspaceId: string } }>(service, "workspace.create", { path: service.workspace });
+    const workspaceResult = await this.rpc<{ workspace: { workspaceId: string } }>(service, "workspace/create", {
+      request: { path: service.workspace },
+    });
     const requestedSessionId = input.sessionId?.trim();
     let sessionId: string;
     let startEventSeq = -1;
     if (requestedSessionId === undefined || requestedSessionId === "") {
-      const session = await this.rpc<{ sessionId: string }>(service, "session.create", {
-        workspaceId: workspaceResult.workspace.workspaceId,
+      const session = await this.rpc<{ sessionId: string }>(service, "session/create", {
+        request: { workspaceId: workspaceResult.workspace.workspaceId },
       });
       sessionId = session.sessionId;
     } else {
-      const [list, history] = await Promise.all([
-        this.rpc<{ items: SessionSummary[] }>(service, "session.list", {}),
-        this.rpc<{ events: HistoryEvent[] }>(service, "session.history", { sessionId: requestedSessionId, maxMessages: 50 }),
-      ]);
+      const list = await this.rpc<{ items: SessionSummary[] }>(service, "session/list", { _request: {} });
       const summary = list.items.find((item) => item.sessionId === requestedSessionId);
       if (summary === undefined) throw new Error(`Unknown sessionId for this workspace: ${requestedSessionId}`);
       if (summary.running) throw new Error(`Harness session is still running: ${requestedSessionId}`);
       sessionId = requestedSessionId;
-      startEventSeq = history.events.reduce((highest, entry) => Math.max(highest, entry.event.seq), -1);
+      startEventSeq = summary.projections?.asOfSeq ?? -1;
     }
     const activeSessionKey = `${service.serviceId}:${sessionId}`;
     if (this.activeSessions.has(activeSessionKey)) throw new Error(`Harness session already has an active MCP run: ${sessionId}`);
     this.activeSessions.add(activeSessionKey);
     try {
-      await this.rpc<{ accepted: true }>(service, "session.prompt", {
-        sessionId,
-        mode: "queue",
-        content: [{ type: "text", text: task }],
+      await this.rpc<{ accepted: true }>(service, "session/prompt", {
+        request: {
+          requestId: randomUUID(),
+          sessionId,
+          mode: "queue",
+          content: [{ type: "text", text: task }],
+        },
       });
     } catch (error) {
       this.activeSessions.delete(activeSessionKey);
@@ -309,7 +312,7 @@ export class RunManager {
     if (run.status === "running") {
       run.cancelRequested = true;
       const service = this.requireService(run.serviceId);
-      await this.rpc<{ accepted: true }>(service, "session.cancel", { sessionId: run.sessionId });
+      await this.rpc<{ accepted: true }>(service, "session/cancel", { request: { sessionId: run.sessionId } });
     }
     return this.refresh(run);
   }
@@ -443,12 +446,17 @@ export class RunManager {
       return this.runSnapshot(run);
     }
     try {
-      const [list, history] = await Promise.all([
-        this.rpc<{ items: SessionSummary[] }>(service, "session.list", {}),
-        this.rpc<{ events: HistoryEvent[] }>(service, "session.history", { sessionId: run.sessionId, maxMessages: 50 }),
-      ]);
+      const list = await this.rpc<{ items: SessionSummary[] }>(service, "session/list", { _request: {} });
       const summary = list.items.find((item) => item.sessionId === run.sessionId);
-      const events = history.events.filter((entry) => entry.event.seq > run.startEventSeq);
+      if (summary === undefined) throw new Error(`Harness session disappeared: ${run.sessionId}`);
+      const page = await this.rpc<{ records: HistoryEvent[] }>(service, "session/page", {
+        request: {
+          address: { kind: "session", sessionId: run.sessionId },
+          throughSeq: summary.projections?.asOfSeq ?? -1,
+          maxMessages: 50,
+        },
+      });
+      const events = page.records.filter((entry) => entry.event.seq > run.startEventSeq);
       run.lastEventSeq = events.reduce((highest, entry) => Math.max(highest, entry.event.seq), run.lastEventSeq);
       run.assistantText = assistantText(events);
       const agentError = [...events].reverse().find((entry) => entry.event.type === "agent/error");
@@ -471,7 +479,7 @@ export class RunManager {
     return this.runSnapshot(run);
   }
 
-  private async rpc<T>(service: ServiceRecord, method: string, payload: unknown): Promise<T> {
+  private async rpc<T>(service: ServiceRecord, method: string, args: Record<string, unknown>): Promise<T> {
     if (service.webUrl === null) throw new Error("Harness Web service has no URL.");
     const response = await fetch(`${service.webUrl}/api/${method}`, {
       method: "POST",
@@ -479,7 +487,7 @@ export class RunManager {
         "content-type": "application/json",
         ...(service.cookie === null ? {} : { cookie: service.cookie }),
       },
-      body: JSON.stringify({ type: "client-request", rpcId: `mcp-${randomUUID()}`, method, payload }),
+      body: JSON.stringify({ type: "client-request", rpcId: `mcp-${randomUUID()}`, method, payload: { args } }),
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) throw new Error(`${method} failed over HTTP ${String(response.status)}: ${await response.text()}`);

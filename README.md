@@ -130,7 +130,7 @@ codex mcp add deepseek-harness -- npx --yes --package=deepseek-harness-for-codex
 | --- | --- | --- |
 | `DSH_MCP_DATA_DIR` | `~/.deep-seek-harness-mcp` | 持久化各工作区的 Harness Web 设置和会话。 |
 | `DSH_MCP_WORKSPACE_ROOTS` | 不限制 | `start_run` 允许使用的绝对根目录列表，使用当前平台的路径分隔符。 |
-| `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.0-rc.6` | 启动本地 Harness 进程时使用的精确 npm 包版本。 |
+| `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.5-rc.2` | 启动本地 Harness 进程时使用的精确 npm 包版本。 |
 | `DSH_MCP_NPX_COMMAND` | `npx` | 自定义 `npx` 命令路径。 |
 | `DSH_MCP_WEB_URL` | 未设置 | DSH 启动时打印的完整回环认证 URL；设置后连接已有服务，不再启动 DSH 子进程。 |
 | `DSH_PERMISSION_MODE` | `workspace-write` | DeepSeek Harness 权限模式。 |
