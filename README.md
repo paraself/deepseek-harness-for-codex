@@ -35,7 +35,7 @@ DEEPSEEK_API_KEY=your-key
 在终端中执行以下两条命令：
 
 ```sh
-codex plugin marketplace add Seann0824/deepseek-harness-for-codex --ref main
+codex plugin marketplace add paraself/deepseek-harness-for-codex --ref main
 codex plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
@@ -43,7 +43,7 @@ codex plugin add deepseek-harness@deepseek-harness-for-codex
 
 ```sh
 CODEX_APP_BIN="/Applications/ChatGPT.app/Contents/Resources/codex"
-"$CODEX_APP_BIN" plugin marketplace add Seann0824/deepseek-harness-for-codex --ref main
+"$CODEX_APP_BIN" plugin marketplace add paraself/deepseek-harness-for-codex --ref main
 "$CODEX_APP_BIN" plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
@@ -56,6 +56,8 @@ CODEX_APP_BIN="/Applications/ChatGPT.app/Contents/Resources/codex"
 Codex 会在本地启动 Harness，在空闲的回环端口提供 Web 页面，返回可点击链接，提交任务并跟踪同一个可见会话，最后独立验收结果。浏览器不会自动打开；需要查看过程时，由你点击 Codex 消息中的链接。你不需要手动启动 Harness，也不需要另外注册 MCP 服务。
 
 首次运行可能会下载固定版本的 MCP 和 Harness npm 包，后续运行会使用本地 npm 缓存。
+
+此 fork 支持通过 `DSH_MCP_WEB_URL` 连接已经运行的 Harness Web，不会再启动一个 DSH 进程。请把 DSH 启动时打印的完整认证 URL（包括 `?token=...`）仅配置在本机环境中，不要提交到 Git。MCP 会用它换取会话 Cookie，对 Codex 只返回不含 Token 的地址。`stop_service` 和 MCP 退出只会断开连接，不会停止外部 DSH。
 
 ## 从旧名称迁移
 
@@ -130,6 +132,7 @@ codex mcp add deepseek-harness -- npx --yes --package=deepseek-harness-for-codex
 | `DSH_MCP_WORKSPACE_ROOTS` | 不限制 | `start_run` 允许使用的绝对根目录列表，使用当前平台的路径分隔符。 |
 | `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.0-rc.6` | 启动本地 Harness 进程时使用的精确 npm 包版本。 |
 | `DSH_MCP_NPX_COMMAND` | `npx` | 自定义 `npx` 命令路径。 |
+| `DSH_MCP_WEB_URL` | 未设置 | DSH 启动时打印的完整回环认证 URL；设置后连接已有服务，不再启动 DSH 子进程。 |
 | `DSH_PERMISSION_MODE` | `workspace-write` | DeepSeek Harness 权限模式。 |
 | `DEEPSEEK_BASE_URL` | 服务商默认值 | 可选的 DeepSeek 兼容 API 地址。 |
 

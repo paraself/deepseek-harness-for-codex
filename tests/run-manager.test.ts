@@ -81,6 +81,42 @@ describe("RunManager Web orchestration", () => {
     expect(openBrowser).not.toHaveBeenCalled();
   });
 
+  it("attaches to an existing Web service without owning its process", async () => {
+    const authenticatedHost = new RunManager({
+      dataDirectory: join(temporaryRoot, "authenticated-host-data"),
+      allowedRoots: [temporaryRoot],
+      startupTimeoutMs: 2_000,
+      commandFactory: ({ workspace: cwd }): HarnessCommand => ({
+        command: process.execPath,
+        args: [fixture],
+        cwd,
+        env: { ...process.env, FAKE_DSH_AUTH_TOKEN: "test-token" },
+      }),
+    });
+    const host = await authenticatedHost.startService({ workspace });
+    const spawnProcess = vi.fn(() => { throw new Error("must not spawn"); });
+    const attached = new RunManager({
+      dataDirectory: join(temporaryRoot, "attached-data"),
+      allowedRoots: [temporaryRoot],
+      externalWebUrl: host.webUrl!,
+      pollIntervalMs: 10,
+      spawnProcess,
+    });
+
+    try {
+      const started = await attached.start({ task: "external task", workspace });
+      expect(started.webUrl).toBe(new URL(host.webUrl!).origin);
+      expect(attached.listServices()[0]?.processId).toBeNull();
+      expect((await attached.wait(started.runId, 2_000)).status).toBe("succeeded");
+      await attached.stopService(started.serviceId);
+      expect(authenticatedHost.listServices()[0]?.status).toBe("running");
+      expect(spawnProcess).not.toHaveBeenCalled();
+    } finally {
+      await attached.close();
+      await authenticatedHost.close();
+    }
+  });
+
   it("lets the caller continue a completed session without returning earlier output", async () => {
     const first = await manager.start({ task: "first", workspace, openBrowser: false });
     await manager.wait(first.runId, 2_000);

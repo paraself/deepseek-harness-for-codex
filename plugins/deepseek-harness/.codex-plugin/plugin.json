@@ -1,6 +1,6 @@
 {
   "name": "deepseek-harness",
-  "version": "0.3.1+codex.20260813212556",
+  "version": "0.3.1+codex.20260919181630",
   "description": "Run DeepSeek Harness locally in a visible Web session controlled and reviewed by Codex.",
   "author": {
     "name": "DeepSeek Harness for Codex contributors"

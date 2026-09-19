@@ -9,6 +9,18 @@ function ok(rpcId, value) {
 }
 
 const server = createServer((request, response) => {
+  const url = new URL(request.url ?? "/", "http://fake.invalid");
+  const authToken = process.env.FAKE_DSH_AUTH_TOKEN;
+  if (authToken && request.method === "GET" && url.pathname === "/" && url.searchParams.get("token") === authToken) {
+    response.writeHead(303, { location: "/", "set-cookie": "fake_dsh=authenticated; HttpOnly; Path=/" });
+    response.end();
+    return;
+  }
+  if (authToken && !request.headers.cookie?.includes("fake_dsh=authenticated")) {
+    response.writeHead(401, { "content-type": "text/plain" });
+    response.end("authentication required");
+    return;
+  }
   if (request.method === "GET") {
     response.writeHead(200, { "content-type": "text/html" });
     response.end("<html><body>Fake DeepSeek Harness Web</body></html>");
@@ -63,7 +75,8 @@ const server = createServer((request, response) => {
 
 server.listen(0, "127.0.0.1", () => {
   const address = server.address();
-  process.stdout.write(`dsh web: http://127.0.0.1:${address.port}\n`);
+  const token = process.env.FAKE_DSH_AUTH_TOKEN;
+  process.stdout.write(`dsh web: http://127.0.0.1:${address.port}${token ? `/?token=${token}` : ""}\n`);
 });
 
 process.on("SIGTERM", () => server.close(() => process.exit(0)));

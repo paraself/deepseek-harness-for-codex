@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildHarnessWebCommand } from "../src/runtime.js";
+import { buildHarnessWebCommand, inspectRuntime, resolveExternalWebService } from "../src/runtime.js";
 
 describe("Harness Web command", () => {
   it("installs the Harness package explicitly before invoking its dsh executable", () => {
@@ -21,5 +21,26 @@ describe("Harness Web command", () => {
       "--port",
       "0",
     ]);
+  });
+
+  it("uses an existing loopback Web service without requiring npx", () => {
+    expect(resolveExternalWebService({ DSH_MCP_WEB_URL: "http://127.0.0.1:3080/?token=test-token" })).toEqual({
+      webUrl: "http://127.0.0.1:3080",
+      authenticationUrl: "http://127.0.0.1:3080/?token=test-token",
+    });
+
+    const runtime = inspectRuntime({
+      DSH_MCP_WEB_URL: "http://127.0.0.1:3080",
+      DSH_MCP_NPX_COMMAND: "missing-npx-command",
+    });
+    expect(runtime.ready).toBe(true);
+    expect(runtime.externalWebUrl).toBe("http://127.0.0.1:3080");
+    expect(runtime.externalWebAuthenticationConfigured).toBe(false);
+    expect(runtime.npxRequired).toBe(false);
+    expect(runtime.npxAvailable).toBeNull();
+  });
+
+  it("rejects non-loopback Web services", () => {
+    expect(() => resolveExternalWebService({ DSH_MCP_WEB_URL: "https://example.com" })).toThrow("loopback");
   });
 });

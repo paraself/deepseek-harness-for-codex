@@ -36,6 +36,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm run test && npm run build",
+    "prepare": "npm run build",
     "release:check": "npm run check && npm pack --dry-run",
     "prepublishOnly": "npm run check"
   },

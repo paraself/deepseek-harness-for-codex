@@ -35,7 +35,7 @@ Do not commit this file. You can instead provide `DEEPSEEK_API_KEY` to the envir
 Copy these two commands into a terminal:
 
 ```sh
-codex plugin marketplace add Seann0824/deepseek-harness-for-codex --ref main
+codex plugin marketplace add paraself/deepseek-harness-for-codex --ref main
 codex plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
@@ -43,7 +43,7 @@ On macOS, if `codex` is not found or another global installation shadows the des
 
 ```sh
 CODEX_APP_BIN="/Applications/ChatGPT.app/Contents/Resources/codex"
-"$CODEX_APP_BIN" plugin marketplace add Seann0824/deepseek-harness-for-codex --ref main
+"$CODEX_APP_BIN" plugin marketplace add paraself/deepseek-harness-for-codex --ref main
 "$CODEX_APP_BIN" plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
@@ -56,6 +56,8 @@ Plugins are loaded when a task starts. Create a new task in Codex and ask it to 
 Codex will start Harness locally, serve its Web page on a free loopback port, return a clickable link, submit the task, follow the visible session, and independently verify the result. The browser does not open automatically; click the link in Codex when you want to watch. You do not need to run Harness or register a separate MCP server.
 
 The first task may download the pinned MCP and Harness npm packages. Later tasks use the local npm cache.
+
+This fork can connect to an existing Harness Web service through `DSH_MCP_WEB_URL` without starting another DSH process. Configure the full authentication URL printed at DSH startup, including `?token=...`, only in the local environment; never commit it. The MCP exchanges it for a session cookie and only returns the token-free address to Codex. `stop_service` and MCP shutdown only detach; they never stop the external DSH service.
 
 ## Migrating from the old name
 
@@ -130,6 +132,7 @@ Both `start_service` and `start_run` default `openBrowser` to `false`, and the p
 | `DSH_MCP_WORKSPACE_ROOTS` | unrestricted | Platform-delimited absolute roots that may be passed to `start_run`. |
 | `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.0-rc.6` | Exact npm package used for the local Harness process. |
 | `DSH_MCP_NPX_COMMAND` | `npx` | Alternate path to `npx`. |
+| `DSH_MCP_WEB_URL` | unset | Full loopback authentication URL printed at DSH startup; attach to that service instead of starting DSH. |
 | `DSH_PERMISSION_MODE` | `workspace-write` | DeepSeek Harness permission mode. |
 | `DEEPSEEK_BASE_URL` | provider default | Optional DeepSeek-compatible API endpoint. |
 
