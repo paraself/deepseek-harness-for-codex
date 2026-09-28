@@ -68,7 +68,37 @@ describe("RunManager Web orchestration", () => {
     const completed = await manager.wait(started.runId, 2_000);
     expect(completed.status).toBe("succeeded");
     expect(completed.assistantText).toBe("completed:implement feature");
-    expect(completed.lastEventSeq).toBe(2);
+    expect(completed.lastEventSeq).toBeGreaterThanOrEqual(3);
+  });
+
+  it("prefixes the generated title after the DSH title provider finishes", async () => {
+    const started = await manager.start({ task: "title-provider", workspace });
+    await manager.wait(started.runId, 2_000);
+
+    await vi.waitFor(async () => {
+      const response = await fetch(`${started.webUrl}/api/session/list`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "client-request", rpcId: "title-test", method: "session/list", payload: { args: { _request: {} } } }),
+      });
+      const body = await response.json() as { result: { value: { items: Array<{ sessionId: string; projections: { values: { title: string } } }> } } };
+      expect(body.result.value.items.find((item) => item.sessionId === started.sessionId)?.projections.values.title).toBe("[codex] generated title");
+    }, { timeout: 3_000 });
+  });
+
+  it("prefixes DSH's fallback title when no title provider runs", async () => {
+    const started = await manager.start({ task: "title-fallback", workspace });
+    await manager.wait(started.runId, 2_000);
+
+    await vi.waitFor(async () => {
+      const response = await fetch(`${started.webUrl}/api/session/list`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "client-request", rpcId: "fallback-test", method: "session/list", payload: { args: { _request: {} } } }),
+      });
+      const body = await response.json() as { result: { value: { items: Array<{ sessionId: string; projections: { values: { title: string } } }> } } };
+      expect(body.result.value.items.find((item) => item.sessionId === started.sessionId)?.projections.values.title).toBe("[codex] fallback title");
+    }, { timeout: 3_000 });
   });
 
   it("reuses one Web service for later tasks in the workspace", async () => {
@@ -157,7 +187,7 @@ describe("RunManager Web orchestration", () => {
     const completed = await manager.wait(second.runId, 2_000);
     expect(completed.status).toBe("succeeded");
     expect(completed.assistantText).toBe("completed:follow-up");
-    expect(completed.lastEventSeq).toBe(5);
+    expect(completed.lastEventSeq).toBeGreaterThanOrEqual(6);
   });
 
   it("rejects reuse while the selected session is running", async () => {

@@ -18,6 +18,9 @@ const READY_PATTERN = /dsh web: (http:\/\/[^\s]+)/;
 const STARTUP_TIMEOUT_MS = 120_000;
 const CANCEL_GRACE_MS = 5_000;
 const MAX_LOG_CHARACTERS = 100_000;
+const TITLE_PREFIX = "[codex] ";
+// ponytail: 最多等待两分钟；若标题模型的超时更长，再按实际配置延长。
+const TITLE_WAIT_MS = 120_000;
 
 interface ServiceRecord {
   serviceId: string;
@@ -318,6 +321,7 @@ export class RunManager {
       error: null,
     };
     this.runs.set(run.runId, run);
+    if (!run.sessionReused) void this.prefixSessionTitle(service, sessionId);
     return this.refresh(run);
   }
 
@@ -498,6 +502,46 @@ export class RunManager {
       run.error = errorText(error);
     }
     return this.runSnapshot(run);
+  }
+
+  private async prefixSessionTitle(service: ServiceRecord, sessionId: string): Promise<void> {
+    const deadline = Date.now() + TITLE_WAIT_MS;
+    let fallback: string | undefined;
+    let providerStarted = false;
+    let turnEnded = false;
+    while (service.status === "running" && Date.now() < deadline) {
+      try {
+        const list = await this.rpc<{ items: SessionSummary[] }>(service, "session/list", { _request: {} });
+        const summary = list.items.find((item) => item.sessionId === sessionId);
+        if (summary === undefined) return;
+        const page = await this.rpc<{ records: HistoryEvent[] }>(service, "session/page", {
+          request: { address: { kind: "session", sessionId }, throughSeq: summary.projections?.asOfSeq ?? -1, maxMessages: 50 },
+        });
+        for (const { event } of page.records) {
+          if (event.type === "session/title-llm-request") providerStarted = true;
+          if (event.type === "turn/end") turnEnded = true;
+          if (event.type === "session/title" && typeof event.data === "object" && event.data !== null) {
+            const { title, source } = event.data as { title?: unknown; source?: { kind?: string } };
+            if (typeof title === "string" && source?.kind === "provider") {
+              await this.rpc(service, "session/rename", { request: { sessionId, title: `${TITLE_PREFIX}${title}` } });
+              return;
+            }
+            if (typeof title === "string" && source?.kind === "fallback") fallback = title;
+          }
+        }
+        if (fallback !== undefined && turnEnded && !providerStarted) break;
+      } catch {
+        // 标题更新失败不应中断智能体任务；下一轮会重试。
+      }
+      await new Promise<void>((resolveWait) => setTimeout(resolveWait, 1_000));
+    }
+    if (fallback !== undefined && service.status === "running") {
+      try {
+        await this.rpc(service, "session/rename", { request: { sessionId, title: `${TITLE_PREFIX}${fallback}` } });
+      } catch {
+        // 重命名失败时保留 DSH 原标题。
+      }
+    }
   }
 
   private async rpc<T>(service: ServiceRecord, method: string, args: Record<string, unknown>): Promise<T> {

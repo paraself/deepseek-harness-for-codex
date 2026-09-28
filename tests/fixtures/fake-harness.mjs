@@ -43,7 +43,7 @@ const server = createServer((request, response) => {
       value = { workspace: { workspaceId: `workspace-${nextWorkspace++}` }, created: true };
     } else if (method === "session/create") {
       const sessionId = `session-${nextSession++}`;
-      sessions.set(sessionId, { running: false, events: [], task: "" });
+      sessions.set(sessionId, { running: false, events: [], task: "", title: null });
       value = { sessionId };
     } else if (method === "session/prompt") {
       const prompt = args.request;
@@ -51,6 +51,17 @@ const server = createServer((request, response) => {
       const session = sessions.get(prompt.sessionId);
       session.running = true;
       session.task = prompt.content[0].text;
+      if (session.events.length === 0) {
+        session.title = session.task === "title-provider" || session.task === "title-fallback" ? "fallback title" : `auto:${session.task}`;
+        session.events.push({ event: { type: "session/title", seq: session.events.length, data: { title: session.title, source: { kind: "fallback" } } } });
+        if (session.task === "title-provider") {
+          session.events.push({ event: { type: "session/title-llm-request", seq: session.events.length, data: {} } });
+          setTimeout(() => {
+            session.title = "generated title";
+            session.events.push({ event: { type: "session/title", seq: session.events.length, data: { title: session.title, source: { kind: "provider" } } } });
+          }, 400);
+        }
+      }
       session.events.push({ event: { type: "turn/start", seq: session.events.length, data: {} } });
       setTimeout(() => {
         session.events.push({
@@ -69,7 +80,7 @@ const server = createServer((request, response) => {
         sessionId,
         running: session.running,
         blank: session.events.length === 0,
-        projections: { asOfSeq: session.events.at(-1)?.event.seq ?? -1, values: {} },
+        projections: { asOfSeq: session.events.at(-1)?.event.seq ?? -1, values: { title: session.title } },
       })) };
     } else if (method === "session/page") {
       const page = args.request;
@@ -80,6 +91,11 @@ const server = createServer((request, response) => {
       session.running = false;
       session.events.push({ event: { type: "turn/end", seq: session.events.length, data: { reason: "cancelled" } } });
       value = { accepted: true };
+    } else if (method === "session/rename") {
+      const session = sessions.get(args.request.sessionId);
+      session.title = args.request.title;
+      session.events.push({ event: { type: "session/title", seq: session.events.length, data: { title: session.title, source: { kind: "user" } } } });
+      value = { title: session.title, seq: session.events.at(-1).event.seq };
     } else {
       value = {};
     }
