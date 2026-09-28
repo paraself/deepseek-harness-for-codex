@@ -26,19 +26,51 @@ input{box-sizing:border-box;width:100%;padding:.7rem;font:inherit}button{font:in
 <input id="url" name="url" type="url" placeholder="http://127.0.0.1:端口/?token=..." autocomplete="off">
 <button name="mode" value="external">连接已有服务</button>
 <button name="mode" value="managed" formnovalidate>由插件启动新服务</button></form>
+<p id="status" role="status"></p>
 <p class="note">选择会在下次启动 Codex 时继续生效。需要修改时，让 Codex 重新打开此设置页。</p>
+<script nonce="__NONCE__">
+const form = document.querySelector("form");
+const status = document.querySelector("#status");
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const body = new URLSearchParams(new FormData(form));
+  body.set("mode", event.submitter?.value ?? "external");
+  const buttons = form.querySelectorAll("button");
+  buttons.forEach((button) => { button.disabled = true; });
+  try {
+    const response = await fetch(location.href, { method: "POST", body });
+    if (!response.ok) throw new Error("Setup failed");
+  } catch {
+    status.textContent = "设置失败。请检查完整认证 URL 和 DSH Web 状态后重试。";
+    buttons.forEach((button) => { button.disabled = false; });
+    return;
+  }
+  form.hidden = true;
+  status.textContent = "设置已保存。如果页面没有自动关闭，请关闭此标签页。";
+  alert("设置已保存，返回 Codex 继续。");
+  window.close();
+});
+</script>
 </body></html>`;
 
-function sendHtml(response: ServerResponse, status: number, html: string): void {
+function sendHtml(response: ServerResponse, status: number, html: string, nonce?: string): void {
   response.writeHead(status, {
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
-    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+    "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'${nonce === undefined ? "" : `; connect-src 'self'; script-src 'nonce-${nonce}'`}`,
     // no-referrer makes Chrome send Origin: null for this page's form POST.
     "referrer-policy": "same-origin",
     "x-content-type-options": "nosniff",
   });
   response.end(html);
+}
+
+function sendSetupPage(response: ServerResponse, status: number, error = false): void {
+  const nonce = randomBytes(16).toString("base64");
+  const page = PAGE.replace("__NONCE__", nonce);
+  sendHtml(response, status, error
+    ? page.replace("<form method=\"post\">", "<p class=\"error\">设置失败。请检查完整认证 URL 和 DSH Web 状态后重试。</p><form method=\"post\">")
+    : page, nonce);
 }
 
 /** Owns the local, one-time browser form and its private persisted connection choice. */
@@ -150,7 +182,7 @@ export class ConnectionSetup {
       return;
     }
     if (request.method === "GET") {
-      sendHtml(response, 200, PAGE);
+      sendSetupPage(response, 200);
       return;
     }
     if (request.method !== "POST" || request.headers.origin !== origin ||
@@ -180,19 +212,10 @@ export class ConnectionSetup {
       }
       await this.save(choice);
       this.choice = choice;
-      if (choice.mode === "external") {
-        response.writeHead(303, {
-          location: choice.url,
-          "cache-control": "no-store",
-          "referrer-policy": "no-referrer",
-        });
-        response.end();
-      } else {
-        sendHtml(response, 200, "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><title>设置完成</title><h1>设置完成</h1><p>回到 Codex 继续任务。</p></html>");
-      }
+      sendHtml(response, 200, "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><title>设置完成</title><h1>设置完成</h1><p>回到 Codex 继续任务。可以关闭此标签页。</p></html>");
       void this.close();
     } catch {
-      sendHtml(response, 400, PAGE.replace("<form method=\"post\">", "<p class=\"error\">设置失败。请检查完整认证 URL 和 DSH Web 状态后重试。</p><form method=\"post\">"));
+      sendSetupPage(response, 400, true);
     }
   }
 

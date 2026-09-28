@@ -80,6 +80,12 @@ describe("MCP server", () => {
     const pageResponse = await fetch(setupUrl);
     expect(pageResponse.headers.get("referrer-policy")).toBe("same-origin");
     const page = await pageResponse.text();
+    const nonce = page.match(/<script nonce="([^"]+)">/)?.[1];
+    expect(nonce).toBeDefined();
+    expect(pageResponse.headers.get("content-security-policy")).toContain(`script-src 'nonce-${nonce}'`);
+    expect(pageResponse.headers.get("content-security-policy")).toContain("connect-src 'self'");
+    expect(page).toContain('alert("设置已保存，返回 Codex 继续。")');
+    expect(page).toContain("window.close()");
     expect(page).toContain("连接已有服务");
     expect(page).toContain("由插件启动新服务");
     const choice = await fetch(setupUrl, {
@@ -192,13 +198,14 @@ describe("MCP server", () => {
 
       const saved = await fetch(setupUrl, {
         method: "POST",
-        redirect: "manual",
         headers: { origin: new URL(setupUrl).origin, "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ mode: "external", url: existing.webUrl! }),
       });
-      expect(saved.status).toBe(303);
-      expect(saved.headers.get("location")).toBe(existing.webUrl);
-      expect(saved.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(saved.status).toBe(200);
+      expect(saved.headers.get("location")).toBeNull();
+      const confirmation = await saved.text();
+      expect(confirmation).toContain("设置完成");
+      expect(confirmation).not.toContain("test-token");
       const ready = await client.callTool({ name: "wait_setup", arguments: { timeoutMs: 2_000 } });
       expect(ready.structuredContent).toMatchObject({
         status: "configured", mode: "external", externalWebUrl: new URL(existing.webUrl!).origin,
@@ -211,6 +218,8 @@ describe("MCP server", () => {
       expect(attached.structuredContent).toMatchObject({
         status: "running", webUrl: new URL(existing.webUrl!).origin, processId: null,
       });
+      await client.callTool({ name: "open_service", arguments: { serviceId: (attached.structuredContent as { serviceId: string }).serviceId } });
+      expect(openBrowser).toHaveBeenLastCalledWith(existing.webUrl);
       expect(JSON.stringify(await client.callTool({ name: "list_services", arguments: {} }))).not.toContain("test-token");
       expect(host.listServices()[0]?.status).toBe("running");
       if (process.platform !== "win32") {
