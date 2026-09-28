@@ -77,7 +77,9 @@ describe("MCP server", () => {
     const setupUrl = (firstUse.structuredContent as { setupUrl: string }).setupUrl;
     expect(openBrowser).toHaveBeenCalledWith(setupUrl);
     expect(manager.listServices()).toHaveLength(0);
-    const page = await (await fetch(setupUrl)).text();
+    const pageResponse = await fetch(setupUrl);
+    expect(pageResponse.headers.get("referrer-policy")).toBe("same-origin");
+    const page = await pageResponse.text();
     expect(page).toContain("连接已有服务");
     expect(page).toContain("由插件启动新服务");
     const choice = await fetch(setupUrl, {
@@ -196,6 +198,7 @@ describe("MCP server", () => {
       });
       expect(saved.status).toBe(303);
       expect(saved.headers.get("location")).toBe(existing.webUrl);
+      expect(saved.headers.get("referrer-policy")).toBe("no-referrer");
       const ready = await client.callTool({ name: "wait_setup", arguments: { timeoutMs: 2_000 } });
       expect(ready.structuredContent).toMatchObject({
         status: "configured", mode: "external", externalWebUrl: new URL(existing.webUrl!).origin,

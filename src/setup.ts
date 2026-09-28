@@ -34,7 +34,8 @@ function sendHtml(response: ServerResponse, status: number, html: string): void 
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
     "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
-    "referrer-policy": "no-referrer",
+    // no-referrer makes Chrome send Origin: null for this page's form POST.
+    "referrer-policy": "same-origin",
     "x-content-type-options": "nosniff",
   });
   response.end(html);
