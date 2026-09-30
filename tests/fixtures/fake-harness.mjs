@@ -63,15 +63,74 @@ const server = createServer((request, response) => {
         }
       }
       session.events.push({ event: { type: "turn/start", seq: session.events.length, data: {} } });
+      if (session.task === "request approval") {
+        session.events.push({
+          event: {
+            type: "approval/asked",
+            seq: session.events.length,
+            data: { id: "approval-1", toolName: "pwsh", reason: "Needs elevated access" },
+          },
+        });
+        value = { accepted: true };
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(ok(rpcId, value)));
+        return;
+      }
       setTimeout(() => {
+        if (session.task === "be blocked") {
+          session.events.push({ event: { type: "turn/end", seq: session.events.length, data: { reason: { kind: "blocked" } } } });
+          session.running = false;
+          return;
+        }
+        const terminalKinds = new Map([
+          ["end with error", "error"],
+          ["end with max tokens", "max-tokens"],
+          ["end interrupted", "interrupted"],
+          ["end aborted", "aborted"],
+        ]);
+        const terminalKind = terminalKinds.get(session.task);
+        if (terminalKind) {
+          session.events.push({ event: { type: "turn/end", seq: session.events.length, data: { reason: { kind: terminalKind } } } });
+          session.running = false;
+          return;
+        }
+        if (session.task.includes("DSH_MCP_SANDBOX_DIAGNOSTIC")) {
+          session.events.push({
+            event: {
+              type: "tool/call",
+              seq: session.events.length,
+              data: { callId: "sandbox-tool-1", name: "shell", arguments: '{"script":"import tempfile; tempfile.TemporaryDirectory()"}' },
+            },
+          });
+          session.events.push({
+            event: {
+              type: "tool/result",
+              seq: session.events.length,
+              data: {
+                message: {
+                  content: [{ type: "tool-result", toolCallId: "sandbox-tool-1", content: [{ type: "text", text: "ok" }] }],
+                },
+              },
+            },
+          });
+        }
         session.events.push({
           event: {
             type: "assistant/message",
             seq: session.events.length,
-            data: { message: { content: [{ type: "text", text: `completed:${session.task}` }] } },
+            data: {
+              message: {
+                content: [{
+                  type: "text",
+                  text: session.task.includes("DSH_MCP_SANDBOX_DIAGNOSTIC")
+                    ? "DSH_SANDBOX_READY"
+                    : `completed:${session.task}`,
+                }],
+              },
+            },
           },
         });
-        session.events.push({ event: { type: "turn/end", seq: session.events.length, data: { reason: "stop" } } });
+        session.events.push({ event: { type: "turn/end", seq: session.events.length, data: { reason: { kind: "completed" } } } });
         session.running = false;
       }, 200);
       value = { accepted: true };
@@ -89,7 +148,7 @@ const server = createServer((request, response) => {
     } else if (method === "session/cancel") {
       const session = sessions.get(args.request.sessionId);
       session.running = false;
-      session.events.push({ event: { type: "turn/end", seq: session.events.length, data: { reason: "cancelled" } } });
+      session.events.push({ event: { type: "turn/end", seq: session.events.length, data: { reason: { kind: "aborted" } } } });
       value = { accepted: true };
     } else if (method === "session/rename") {
       const session = sessions.get(args.request.sessionId);

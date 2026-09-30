@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +38,11 @@ test("bundled MCP starts without installed dependencies", async () => {
     const tools = await receive();
     assert.deepEqual(["doctor", "start_run", "wait_run"].filter((name) => !tools.result.tools.some((tool) => tool.name === name)), []);
   } finally {
-    server.kill();
+    if (server.exitCode === null) {
+      const closed = once(server, "close");
+      server.kill();
+      await closed;
+    }
     await rm(directory, { recursive: true, force: true });
   }
 });

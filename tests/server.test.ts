@@ -178,6 +178,8 @@ describe("MCP server", () => {
     });
     try {
       const existing = await host.startService({ workspace });
+      const authenticationUrl = new URL(existing.webUrl!);
+      authenticationUrl.searchParams.set("token", "test-token");
       const firstUse = await client.callTool({ name: "start_service", arguments: { workspace } });
       const setupUrl = (firstUse.structuredContent as { setupUrl: string }).setupUrl;
       expect(firstUse.structuredContent).toMatchObject({ status: "pending" });
@@ -185,7 +187,7 @@ describe("MCP server", () => {
       const badOrigin = await fetch(setupUrl, {
         method: "POST",
         headers: { origin: "http://evil.invalid", "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ mode: "external", url: existing.webUrl! }),
+        body: new URLSearchParams({ mode: "external", url: authenticationUrl.href }),
       });
       expect(badOrigin.status).toBe(403);
 
@@ -199,7 +201,7 @@ describe("MCP server", () => {
       const saved = await fetch(setupUrl, {
         method: "POST",
         headers: { origin: new URL(setupUrl).origin, "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ mode: "external", url: existing.webUrl! }),
+        body: new URLSearchParams({ mode: "external", url: authenticationUrl.href }),
       });
       expect(saved.status).toBe(200);
       expect(saved.headers.get("location")).toBeNull();
@@ -212,6 +214,12 @@ describe("MCP server", () => {
       });
       expect(JSON.stringify(ready)).not.toContain("test-token");
       const doctor = await client.callTool({ name: "doctor", arguments: {} });
+      expect(doctor.structuredContent).toMatchObject({
+        npxRequired: false,
+        externalWebUrl: authenticationUrl.origin,
+        setupStatus: "configured",
+        connectionMode: "external",
+      });
       expect(JSON.stringify(doctor)).not.toContain("test-token");
 
       const attached = await client.callTool({ name: "start_service", arguments: { workspace } });
@@ -219,7 +227,7 @@ describe("MCP server", () => {
         status: "running", webUrl: new URL(existing.webUrl!).origin, processId: null,
       });
       await client.callTool({ name: "open_service", arguments: { serviceId: (attached.structuredContent as { serviceId: string }).serviceId } });
-      expect(openBrowser).toHaveBeenLastCalledWith(existing.webUrl);
+      expect(openBrowser).toHaveBeenLastCalledWith(authenticationUrl.href);
       expect(JSON.stringify(await client.callTool({ name: "list_services", arguments: {} }))).not.toContain("test-token");
       expect(host.listServices()[0]?.status).toBe("running");
       if (process.platform !== "win32") {
@@ -231,5 +239,45 @@ describe("MCP server", () => {
     } finally {
       await host.close();
     }
+  });
+
+  it("runs an explicit deep doctor sandbox diagnostic", async () => {
+    const quick = await client.callTool({ name: "doctor", arguments: {} });
+    expect(quick.structuredContent).toMatchObject({ setupStatus: "required", connectionMode: null });
+    expect(quick.structuredContent).toHaveProperty("runtimeReady");
+    expect(openBrowser).not.toHaveBeenCalled();
+
+    const firstUse = await client.callTool({
+      name: "doctor",
+      arguments: { deep: true, workspace },
+    });
+
+    expect(firstUse.structuredContent).toMatchObject({ status: "pending", mode: null });
+    const setupUrl = (firstUse.structuredContent as { setupUrl: string }).setupUrl;
+    expect(openBrowser).toHaveBeenCalledWith(setupUrl);
+    expect(manager.listServices()).toHaveLength(0);
+
+    await fetch(setupUrl, {
+      method: "POST",
+      headers: { origin: new URL(setupUrl).origin, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ mode: "managed" }),
+    });
+    await client.callTool({ name: "wait_setup", arguments: { timeoutMs: 2_000 } });
+
+    const response = await client.callTool({
+      name: "doctor",
+      arguments: { deep: true, workspace },
+    });
+
+    expect(response.isError).not.toBe(true);
+    expect(response.structuredContent).toMatchObject({
+      mode: "deep",
+      ready: true,
+      runtimeReady: true,
+      credentialReady: true,
+      serviceReady: true,
+      sandboxReady: true,
+      diagnosticToolEvidence: true,
+    });
   });
 });

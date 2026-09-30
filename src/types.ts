@@ -1,5 +1,20 @@
 /** Lifecycle state for one task submitted through the Harness Web service. */
-export type RunStatus = "running" | "succeeded" | "failed" | "cancelled";
+export type RunStatus = "running" | "needs_approval" | "blocked" | "succeeded" | "failed" | "cancelled";
+
+/** Structured user approval request reported by DeepSeek Harness. */
+export interface ApprovalRequest {
+  id: string;
+  toolName: string;
+  reason: string | null;
+}
+
+/** Advisory Git-based report for caller-supplied write paths. */
+export interface WriteBoundaryReport {
+  checked: boolean;
+  violations: string[];
+  error: string | null;
+  limitations: string[];
+}
 
 /** Lifecycle state for a local Harness Web service. */
 export type ServiceStatus = "starting" | "running" | "stopped" | "failed";
@@ -26,8 +41,11 @@ export interface RunSnapshot {
   sessionReused: boolean;
   task: string;
   workspace: string;
-  webUrl: string;
+  webUrl: string | null;
   status: RunStatus;
+  recovered: boolean;
+  approval: ApprovalRequest | null;
+  writeBoundary: WriteBoundaryReport | null;
   cancelRequested: boolean;
   startedAt: string;
   finishedAt: string | null;
@@ -42,6 +60,7 @@ export interface StartRunInput {
   workspace: string;
   sessionId?: string | undefined;
   openBrowser?: boolean | undefined;
+  allowedWritePaths?: string[] | undefined;
 }
 
 /** Inputs needed to start or reuse a local Harness Web service. */

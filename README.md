@@ -18,7 +18,7 @@ DeepSeek Harness for Codex 让 Codex 在本地启动 [DeepSeek Harness](https://
 
 ### 1. 准备环境
 
-- Node.js 22 或更高版本，并包含 `npx`
+- Node.js `^22.19.0` 或 `>=24.0.0`，并包含 `npx`
 - 支持插件的 Codex 客户端
 - DeepSeek API Key
 
@@ -35,7 +35,7 @@ DEEPSEEK_API_KEY=your-key
 在终端中执行以下两条命令：
 
 ```sh
-codex plugin marketplace add paraself/deepseek-harness-for-codex --ref main
+codex plugin marketplace add orange030/deepseek-harness-for-codex --ref main
 codex plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
@@ -43,7 +43,7 @@ codex plugin add deepseek-harness@deepseek-harness-for-codex
 
 ```sh
 CODEX_APP_BIN="/Applications/ChatGPT.app/Contents/Resources/codex"
-"$CODEX_APP_BIN" plugin marketplace add paraself/deepseek-harness-for-codex --ref main
+"$CODEX_APP_BIN" plugin marketplace add orange030/deepseek-harness-for-codex --ref main
 "$CODEX_APP_BIN" plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
@@ -55,9 +55,9 @@ CODEX_APP_BIN="/Applications/ChatGPT.app/Contents/Resources/codex"
 
 首次使用时，插件会自动打开本地设置页。选择连接已有 DSH Web（在页面中粘贴启动时输出的完整认证 URL），或让插件启动新服务。选择保存在插件本地，之后 Codex 会提交任务并跟踪可见会话，最后独立验收结果。后续任务不会自动打开会话页；无需另外注册 MCP 服务。
 
-MCP 随插件安装，无需在每次启动时下载。选择由插件启动新服务时，首次运行仍可能下载 Harness npm 包。
+MCP 随插件安装，启动时不会从 GitHub 下载代码。选择由插件启动新服务时，首次运行仍可能下载固定版本的 Harness npm 包，后续运行使用本地 npm 缓存。
 
-连接已有服务时，设置页会验证完整认证 URL（包括 `?token=...`），仅将其写入插件本地数据目录的私有文件，然后在浏览器中跳转到该服务完成登录；MCP 工具只向 Codex 返回不含 Token 的地址。`DSH_MCP_WEB_URL` 仍可作为环境变量使用，并优先于页面设置。`stop_service` 和 MCP 退出只会断开连接，不会停止外部 DSH。若 DSH 重启并更换认证 URL，可让 Codex 调用 `open_setup` 重新配置。
+连接已有服务时，设置页会验证完整认证 URL（包括 `?token=...`），并将其明文写入插件本地数据目录的私有 `connection.json`；不得提交该文件。MCP 会用该 URL 换取会话 Cookie，只向 Codex 返回不含 Token 的地址。`DSH_MCP_WEB_URL` 仍可作为环境变量覆盖页面设置。`runs-v1/` 运行索引不保存 Token URL、Cookie 或服务日志。`stop_service` 和 MCP 退出只会断开连接，不会停止外部 DSH。若 DSH 重启并更换认证 URL，可让 Codex 调用 `open_setup` 重新配置。
 
 ## 从旧名称迁移
 
@@ -91,7 +91,7 @@ codex plugin marketplace remove deepseek-harness-for-codex
 仅当你只需要 MCP 工具、不需要插件的委派工作流和 Codex UI 入口时使用：
 
 ```sh
-npm install --global 'github:paraself/deepseek-harness-for-codex#paraself-v0.4.1-bundled-mcp.1'
+npm install --global 'github:orange030/deepseek-harness-for-codex#v0.4.1'
 codex mcp add deepseek-harness -- deepseek-harness-for-codex
 ```
 
@@ -99,7 +99,7 @@ codex mcp add deepseek-harness -- deepseek-harness-for-codex
 
 ## 工作原理
 
-插件直接启动随安装包提供的 MCP 服务。没有既有选择时，首次调用 `start_run` 或 `start_service` 会打开仅监听回环地址的设置页；用户选择后，Codex 重试原调用。选择由插件启动时，MCP 执行 `@deepseek-ai/dsh web --port 0`；选择已有服务时，MCP 连接该服务，不启动第二个 DSH 进程。
+插件直接启动安装包中的 MCP 服务，不会在运行时从 GitHub `main` 分支获取代码。没有既有选择时，首次调用 `start_run` 或 `start_service` 会打开仅监听回环地址的设置页；用户选择后，Codex 重试原调用。选择由插件启动时，MCP 通过 `npx` 执行精确版本的 `@deepseek-ai/dsh web --port 0`；选择已有服务时，MCP 直接连接该服务，不启动第二个 DSH 进程。后续任务复用本地服务，不经过托管中转。
 
 每次运行都是异步任务：
 
@@ -112,7 +112,7 @@ codex mcp add deepseek-harness -- deepseek-harness-for-codex
 
 | 工具 | 用途 |
 | --- | --- |
-| `doctor` | 检查 Node、npx、包版本、凭据可见性、数据目录和工作区限制。 |
+| `doctor` | 默认快速检查运行时和安全配置；传入 `deep: true` 与工作区后，启动真实 DSH 回合检查凭据和 Windows 临时目录读写删除。成功必须同时存在精确成功标记和匹配的成功工具调用记录。深度检查会使用模型额度并创建本地会话数据。 |
 | `open_setup` | 打开本地设置页，修改已有服务或插件启动服务的选择。 |
 | `wait_setup` | 等待设置页保存选择，单次最多 30 秒。 |
 | `start_service` | 为工作区启动或复用 Harness Web，并返回页面链接；默认不打开浏览器。 |
@@ -122,10 +122,10 @@ codex mcp add deepseek-harness -- deepseek-harness-for-codex
 | `start_run` | 由 Codex 选择创建新会话或继续已完成的会话，然后提交任务。 |
 | `wait_run` | 等待可见会话，单次最多 30 秒。 |
 | `get_run` | 读取 Web 会话状态和助手输出。 |
-| `list_runs` | 列出当前 MCP 服务进程创建的运行记录。 |
+| `list_runs` | 列出本地持久化运行记录；MCP 重启前仍在运行的记录会保守标记为失败并保留 `sessionId`。 |
 | `cancel_run` | 取消当前 agent turn，同时保留 Web 服务。 |
 
-首次设置页会自动打开；选择已有服务后，浏览器会跳转过去完成登录。之后运行任务不会自动打开会话页面。`start_service` 和 `start_run` 的 `openBrowser` 默认值仍为 `false`。Codex 应把返回的 `webUrl` 渲染成可点击链接；只有用户明确要求 Codex 代为打开会话页面时，才使用 `open_service`。
+首次设置页会自动打开；保存后会显示确认页，之后运行任务不会自动打开会话页面。`start_service` 和 `start_run` 的 `openBrowser` 默认值都是 `false`。Codex 应把返回的 `webUrl` 渲染成可点击链接；只有用户明确要求 Codex 代为打开时，才使用 `open_service`。等待审批时运行状态为 `needs_approval` 并返回结构化审批信息；DSH 以 blocked 原因结束时状态为 `blocked`。
 
 ## 配置
 
@@ -133,21 +133,23 @@ codex mcp add deepseek-harness -- deepseek-harness-for-codex
 | --- | --- | --- |
 | `DSH_MCP_DATA_DIR` | `~/.deep-seek-harness-mcp` | 持久化各工作区的 Harness Web 设置和会话。 |
 | `DSH_MCP_WORKSPACE_ROOTS` | 不限制 | `start_run` 允许使用的绝对根目录列表，使用当前平台的路径分隔符。 |
-| `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.5-rc.2` | 启动本地 Harness 进程时使用的精确 npm 包版本。 |
+| `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.7-rc.2` | 启动本地 Harness 进程时使用的精确 npm 包版本。Windows 上已在 `0.1.5-rc.2`、`0.1.7-rc.2` 和 `0.2.0-rc.1` 复现部分工作区的 ACL 初始化失败；请用 deep doctor 检查具体工作区。 |
 | `DSH_MCP_NPX_COMMAND` | `npx` | 自定义 `npx` 命令路径。 |
 | `DSH_MCP_WEB_URL` | 未设置 | 可选覆盖设置页的选择；值为 DSH 启动时打印的完整回环认证 URL。 |
 | `DSH_PERMISSION_MODE` | `workspace-write` | DeepSeek Harness 权限模式。 |
 | `DEEPSEEK_BASE_URL` | 服务商默认值 | 可选的 DeepSeek 兼容 API 地址。 |
 
-设置页将选择写入 `DSH_MCP_DATA_DIR/connection.json`；含 Token 的文件在 Unix 上以 `0600` 权限创建，不得提交到 Git。Harness 子进程默认关闭遥测。Web 服务只绑定回环地址并自动选择空闲端口。会话数据保留在配置的数据目录中，便于本地审计。
+设置页将选择写入 `DSH_MCP_DATA_DIR/connection.json`；含 Token 的文件在 Unix 上以 `0600` 权限创建，不得提交到 Git。Harness 子进程默认关闭遥测。Web 服务只绑定回环地址并自动选择空闲端口。会话数据和 `runs-v1/` 下的逐运行索引文件保留在配置的数据目录中；索引只保存 run/session/workspace 映射、状态、序号和时间戳，不保存任务文本、助手输出、审批原因、Token URL、Cookie、进程句柄或服务日志。
 
 ## 安全模型
 
-`start_run` 是可写工具。服务端要求工作区必须是已存在的绝对路径，会解析符号链接，使用 argv 而不是 shell 启动进程，并可通过 `DSH_MCP_WORKSPACE_ROOTS` 限制允许访问的根目录。Harness Web 仅监听回环地址。默认权限模式是 `workspace-write`，本项目不会静默启用不受限制的主机访问权限。
+`start_run` 是可写工具。服务端要求工作区必须是已存在的绝对路径，会解析符号链接，并通过跨平台进程启动器传递独立 argv，而不是手工拼接 shell 命令；配置值中的换行符也会被拒绝。可通过 `DSH_MCP_WORKSPACE_ROOTS` 限制允许访问的根目录；未配置时 `doctor` 会给出安全警告，相对根目录会被拒绝。Harness Web 仅监听回环地址。默认权限模式是 `workspace-write`，本项目不会静默启用不受限制的主机访问权限。
+
+`start_run.allowedWritePaths` 可选接受工作区相对的文件或目录前缀。运行结束后插件会报告范围之外的 Git 可见变更；这是审计提示，不是强制沙箱，也不覆盖 ignored 文件。显式使用该选项时，工作区当前必须是 Git 仓库根目录。
 
 ## 会话模型
 
-每次调用 `start_run` 时，Codex 都可以选择会话。省略 `sessionId` 会创建新的可见 Harness 会话；传入之前已完成运行返回的 `sessionId`，会继续原有对话，并且只返回本轮新增输出。运行中的会话不能被并发复用。本地 Web 服务会持续复用，直到调用 `stop_service` 或 MCP 服务退出。
+每次调用 `start_run` 时，Codex 都可以选择会话。省略 `sessionId` 会创建新的可见 Harness 会话；传入之前已完成运行返回的 `sessionId`，会继续原有对话，并且只返回本轮新增输出。运行中的会话不能被并发复用。本地 Web 服务会持续复用，直到调用 `stop_service` 或 MCP 服务退出。每条运行映射使用独立文件原子替换，多个 MCP 进程不会互相覆盖；MCP 重启后可以继续列出已完成记录，但不会持久化任务/输出文本或失效的服务 URL。
 
 ## 本地开发
 

@@ -1,8 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
+import spawn from "cross-spawn";
 
-export const DEFAULT_HARNESS_PACKAGE = "@deepseek-ai/dsh@0.1.5-rc.2";
+export const DEFAULT_HARNESS_PACKAGE = "@deepseek-ai/dsh@0.1.7-rc.2";
 
 /** A shell-free command specification for one local Harness process. */
 export interface HarnessCommand {
@@ -22,6 +22,15 @@ export interface HarnessWebCommandInput {
 export interface ExternalWebService {
   webUrl: string;
   authenticationUrl: string | null;
+}
+
+/** Resolves the npx command without enabling Node's shell mode. */
+function resolveNpxCommand(env: NodeJS.ProcessEnv): string {
+  const command = env.DSH_MCP_NPX_COMMAND?.trim() || "npx";
+  if (/[\r\n]/u.test(command)) {
+    throw new Error("DSH_MCP_NPX_COMMAND must not contain line breaks.");
+  }
+  return command;
 }
 
 /** Resolves the persistent data directory used for local Web service state. */
@@ -102,15 +111,18 @@ export function buildHarnessWebCommand(
   input: HarnessWebCommandInput,
   env: NodeJS.ProcessEnv = process.env,
 ): HarnessCommand {
-  const command = env.DSH_MCP_NPX_COMMAND?.trim() || (process.platform === "win32" ? "npx.cmd" : "npx");
+  const command = resolveNpxCommand(env);
   const harnessPackage = env.DSH_MCP_HARNESS_PACKAGE?.trim() || DEFAULT_HARNESS_PACKAGE;
   if (harnessPackage.startsWith("-")) {
     throw new Error("DSH_MCP_HARNESS_PACKAGE must be an npm package specifier, not an option.");
   }
+  if (/[\r\n]/u.test(harnessPackage)) {
+    throw new Error("DSH_MCP_HARNESS_PACKAGE must not contain line breaks.");
+  }
 
   return {
     command,
-    args: ["--yes", `--package=${harnessPackage}`, "--", "dsh", "web", "--port", "0"],
+    args: ["--yes", `--package=${harnessPackage}`, "--", "dsh", "web", "--port", "0", "--no-open"],
     cwd: input.workspace,
     env: {
       ...env,
@@ -126,17 +138,66 @@ export function buildHarnessWebCommand(
 
 /** Returns local prerequisites without making a network request. */
 export function inspectRuntime(env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
-  const externalWebService = resolveExternalWebService(env);
-  const command = env.DSH_MCP_NPX_COMMAND?.trim() || (process.platform === "win32" ? "npx.cmd" : "npx");
+  const warnings: Array<{ code: string; message: string }> = [];
+  let externalWebService: ExternalWebService | undefined;
+  let externalWebServiceValid = true;
+  try {
+    externalWebService = resolveExternalWebService(env);
+  } catch (error) {
+    externalWebServiceValid = false;
+    warnings.push({
+      code: "external_web_url_invalid",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+  const command = resolveNpxCommand(env);
   const probe = externalWebService === undefined
-    ? spawnSync(command, ["--version"], { encoding: "utf8", shell: false, timeout: 5_000 })
+    ? spawn.sync(command, ["--version"], { encoding: "utf8", shell: false, timeout: 5_000 })
     : null;
-  const nodeMajor = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
+  const [nodeMajor = 0, nodeMinor = 0] = process.versions.node.split(".").map((part) => Number.parseInt(part, 10));
+  const nodeSupported = (nodeMajor === 22 && nodeMinor >= 19) || nodeMajor >= 24;
+  const allowedWorkspaceRoots = resolveAllowedRoots(env);
+  const relativeRoots = allowedWorkspaceRoots.filter((root) => !isAbsolute(root));
+  if (allowedWorkspaceRoots.length === 0) {
+    warnings.push({
+      code: "workspace_roots_unrestricted",
+      message: "DSH_MCP_WORKSPACE_ROOTS is empty; any absolute workspace path is allowed.",
+    });
+  }
+  for (const root of relativeRoots) {
+    warnings.push({
+      code: "workspace_root_not_absolute",
+      message: `Workspace root must be absolute: ${root}`,
+    });
+  }
+  const harnessPackage = env.DSH_MCP_HARNESS_PACKAGE?.trim() || DEFAULT_HARNESS_PACKAGE;
+  const windowsSandboxRiskPackages = new Set([
+    "@deepseek-ai/dsh@0.1.5-rc.2",
+    "@deepseek-ai/dsh@0.1.7-rc.2",
+    "@deepseek-ai/dsh@0.2.0-rc.1",
+  ]);
+  if (process.platform === "win32" && windowsSandboxRiskPackages.has(harnessPackage)) {
+    warnings.push({
+      code: "known_windows_sandbox_risk",
+      message: `${harnessPackage} has reproduced a Windows workspace-write ACL initialization failure on some hosts; use doctor deep mode to verify this workspace.`,
+    });
+  }
+  const runtimeReady = nodeSupported
+    && externalWebServiceValid
+    && relativeRoots.length === 0
+    && (externalWebService !== undefined || probe?.status === 0);
 
   return {
-    ready: nodeMajor >= 22 && (externalWebService !== undefined || probe?.status === 0),
+    mode: "quick",
+    ready: runtimeReady,
+    runtimeReady,
+    credentialReady: null,
+    serviceReady: null,
+    sandboxReady: null,
+    warnings,
     nodeVersion: process.versions.node,
-    nodeSupported: nodeMajor >= 22,
+    nodeSupported,
+    nodeRequirement: "^22.19.0 || >=24.0.0",
     platform: process.platform,
     architecture: process.arch,
     externalWebUrl: externalWebService?.webUrl ?? null,
@@ -145,10 +206,12 @@ export function inspectRuntime(env: NodeJS.ProcessEnv = process.env): Record<str
     npxCommand: command,
     npxAvailable: probe === null ? null : probe.status === 0,
     npxVersion: probe?.status === 0 ? probe.stdout.trim() : null,
-    harnessPackage: env.DSH_MCP_HARNESS_PACKAGE?.trim() || DEFAULT_HARNESS_PACKAGE,
+    harnessPackage,
+    credentialConfigured: Boolean(env.DEEPSEEK_API_KEY?.trim()),
     apiKeyInEnvironment: Boolean(env.DEEPSEEK_API_KEY?.trim()),
     dataDirectory: resolveDataDirectory(env),
-    allowedWorkspaceRoots: resolveAllowedRoots(env),
+    allowedWorkspaceRoots,
+    workspaceRootsRestricted: allowedWorkspaceRoots.length > 0,
     surface: "web",
   };
 }

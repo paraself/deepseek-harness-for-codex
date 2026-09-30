@@ -16,26 +16,26 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Seann0824/deepseek-harness-for-codex.git"
+    "url": "git+https://github.com/orange030/deepseek-harness-for-codex.git"
   },
-  "homepage": "https://github.com/Seann0824/deepseek-harness-for-codex#readme",
+  "homepage": "https://github.com/orange030/deepseek-harness-for-codex#readme",
   "bugs": {
-    "url": "https://github.com/Seann0824/deepseek-harness-for-codex/issues"
+    "url": "https://github.com/orange030/deepseek-harness-for-codex/issues"
   },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
   "engines": {
-    "node": ">=22.0.0",
+    "node": "^22.19.0 || >=24.0.0",
     "npm": ">=10.0.0"
   },
   "packageManager": "npm@10.9.4",
   "scripts": {
-    "build": "tsdown",
+    "build": "tsdown && node scripts/normalize-bundles.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "check": "npm run typecheck && npm run test && npm run build && node --test tests/check-bundle.mjs",
+    "test": "vitest run --dir tests",
+    "check": "npm run typecheck && npm run build && npm run test && node --test tests/check-bundle.mjs",
     "prepare": "npm run build",
     "release:check": "npm run check && npm pack --dry-run",
     "prepublishOnly": "npm run check"
@@ -50,9 +50,11 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
+    "cross-spawn": "7.0.6",
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@types/cross-spawn": "6.0.6",
     "@types/node": "22.20.0",
     "tsdown": "0.22.14",
     "typescript": "6.0.3",
