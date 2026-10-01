@@ -53,7 +53,7 @@ CODEX_APP_BIN="/Applications/ChatGPT.app/Contents/Resources/codex"
 
 > 使用 DeepSeek Harness 在可见的本地会话中实现这个需求。首次配置时打开设置页；任务运行时把 Harness 实时页面链接发给我，完成后由你检查 diff 并运行相关测试。
 
-首次使用时，插件会自动打开本地设置页。选择连接已有 DSH Web（在页面中粘贴启动时输出的完整认证 URL），或让插件启动新服务。选择保存在插件本地，之后 Codex 会提交任务并跟踪可见会话，最后独立验收结果。后续任务不会自动打开会话页；无需另外注册 MCP 服务。
+首次使用时，插件会自动打开本地设置页。选择连接已有 DSH Web（在页面中粘贴启动时输出的完整认证 URL），或让插件启动新服务；也可勾选“成功后自动归档新建会话”。选择保存在插件本地，之后 Codex 会提交任务并跟踪可见会话，最后独立验收结果。后续任务不会自动打开会话页；无需另外注册 MCP 服务。
 
 MCP 随插件安装，无需在每次启动时下载。选择由插件启动新服务时，首次运行仍可能下载 Harness npm 包。
 
@@ -136,10 +136,11 @@ codex mcp add deepseek-harness -- deepseek-harness-for-codex
 | `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.5-rc.2` | 启动本地 Harness 进程时使用的精确 npm 包版本。 |
 | `DSH_MCP_NPX_COMMAND` | `npx` | 自定义 `npx` 命令路径。 |
 | `DSH_MCP_WEB_URL` | 未设置 | 可选覆盖设置页的选择；值为 DSH 启动时打印的完整回环认证 URL。 |
+| `DSH_MCP_AUTO_ARCHIVE` | 未设置 | 可选覆盖设置页的归档开关，只接受 `true` 或 `false`；开启后仅归档成功的新建会话。 |
 | `DSH_PERMISSION_MODE` | `workspace-write` | DeepSeek Harness 权限模式。 |
 | `DEEPSEEK_BASE_URL` | 服务商默认值 | 可选的 DeepSeek 兼容 API 地址。 |
 
-设置页将选择写入 `DSH_MCP_DATA_DIR/connection.json`；含 Token 的文件在 Unix 上以 `0600` 权限创建，不得提交到 Git。Harness 子进程默认关闭遥测。Web 服务只绑定回环地址并自动选择空闲端口。会话数据保留在配置的数据目录中，便于本地审计。
+设置页将选择写入 `DSH_MCP_DATA_DIR/connection.json`；含 Token 的文件在 Unix 上以 `0600` 权限创建，不得提交到 Git。开启自动归档后，失败、取消和复用的会话不会归档；归档失败不会把运行标记为失败，并会在运行结果的 `archiveError` 中报告。Harness 子进程默认关闭遥测。Web 服务只绑定回环地址并自动选择空闲端口。会话数据保留在配置的数据目录中，便于本地审计。
 
 ## 安全模型
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildHarnessWebCommand, inspectRuntime, resolveExternalWebService } from "../src/runtime.js";
+import { buildHarnessWebCommand, inspectRuntime, resolveAutoArchiveSuccessfulRuns, resolveExternalWebService } from "../src/runtime.js";
 
 describe("Harness Web command", () => {
   it("installs the Harness package explicitly before invoking its dsh executable", () => {
@@ -38,9 +38,17 @@ describe("Harness Web command", () => {
     expect(runtime.externalWebAuthenticationConfigured).toBe(false);
     expect(runtime.npxRequired).toBe(false);
     expect(runtime.npxAvailable).toBeNull();
+    expect(runtime.autoArchiveSuccessfulRuns).toBe(false);
   });
 
   it("rejects non-loopback Web services", () => {
     expect(() => resolveExternalWebService({ DSH_MCP_WEB_URL: "https://example.com" })).toThrow("loopback");
+  });
+
+  it("parses the auto-archive environment override", () => {
+    expect(resolveAutoArchiveSuccessfulRuns({ DSH_MCP_AUTO_ARCHIVE: "true" })).toBe(true);
+    expect(resolveAutoArchiveSuccessfulRuns({ DSH_MCP_AUTO_ARCHIVE: "false" })).toBe(false);
+    expect(resolveAutoArchiveSuccessfulRuns({})).toBeUndefined();
+    expect(() => resolveAutoArchiveSuccessfulRuns({ DSH_MCP_AUTO_ARCHIVE: "yes" })).toThrow("true or false");
   });
 });

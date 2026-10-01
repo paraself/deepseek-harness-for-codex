@@ -53,7 +53,7 @@ Plugins are loaded when a task starts. Create a new task in Codex and ask it to 
 
 > Use DeepSeek Harness to implement this change in a visible local session. Open the setup page on first use; give me the live Harness session link, then review the diff and run the relevant checks yourself.
 
-On first use, the plugin opens a local setup page. Choose an existing DSH Web service by pasting its full startup authentication URL, or let the plugin start a new service. The choice is saved locally. Codex then submits the task, follows the visible session, and independently verifies the result. Later tasks do not automatically open the session page. No separate MCP registration is needed.
+On first use, the plugin opens a local setup page. Choose an existing DSH Web service by pasting its full startup authentication URL, or let the plugin start a new service; the page also controls whether successful new sessions are archived automatically. The choice is saved locally. Codex then submits the task, follows the visible session, and independently verifies the result. Later tasks do not automatically open the session page. No separate MCP registration is needed.
 
 The MCP server is included with the plugin, so startup does not download it. Managed mode may still download the Harness npm package on its first run.
 
@@ -136,10 +136,11 @@ The first-use setup page opens automatically. Selecting an existing service redi
 | `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.5-rc.2` | Exact npm package used for the local Harness process. |
 | `DSH_MCP_NPX_COMMAND` | `npx` | Alternate path to `npx`. |
 | `DSH_MCP_WEB_URL` | unset | Optional override of the saved choice; use the full loopback authentication URL printed at DSH startup. |
+| `DSH_MCP_AUTO_ARCHIVE` | unset | Optional `true`/`false` override for the setup-page archive switch; when enabled, only successful newly-created sessions are archived. |
 | `DSH_PERMISSION_MODE` | `workspace-write` | DeepSeek Harness permission mode. |
 | `DEEPSEEK_BASE_URL` | provider default | Optional DeepSeek-compatible API endpoint. |
 
-The setup page saves the choice in `DSH_MCP_DATA_DIR/connection.json`. On Unix, a file containing a token is created with `0600` permissions and must not be committed. Telemetry is disabled for Harness child processes by default. The Web service binds to loopback and selects a free port. Session data remains in the configured data directory for local audit.
+The setup page saves the choice in `DSH_MCP_DATA_DIR/connection.json`. Failed, cancelled, and reused sessions are not archived; an archive failure leaves the run successful and is returned as `archiveError`. On Unix, a file containing a token is created with `0600` permissions and must not be committed. Telemetry is disabled for Harness child processes by default. The Web service binds to loopback and selects a free port. Session data remains in the configured data directory for local audit.
 
 ## Security model
 

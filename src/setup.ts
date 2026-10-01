@@ -2,9 +2,11 @@ import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { authenticateExternalWebService, resolveExternalWebService } from "./runtime.js";
+import { authenticateExternalWebService, resolveAutoArchiveSuccessfulRuns, resolveExternalWebService } from "./runtime.js";
 
-export type ConnectionChoice = { mode: "managed" } | { mode: "external"; url: string };
+export type ConnectionChoice =
+  | { mode: "managed"; autoArchiveSuccessfulRuns: boolean }
+  | { mode: "external"; url: string; autoArchiveSuccessfulRuns: boolean };
 
 export interface SetupSnapshot {
   status: "required" | "pending" | "configured";
@@ -12,18 +14,20 @@ export interface SetupSnapshot {
   externalWebUrl: string | null;
   setupUrl: string | null;
   browserError: string | null;
+  autoArchiveSuccessfulRuns: boolean;
 }
 
 const PAGE = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>设置 DeepSeek Harness</title><style>
 body{font:16px system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem;line-height:1.5}
-input{box-sizing:border-box;width:100%;padding:.7rem;font:inherit}button{font:inherit;padding:.7rem 1rem;margin:.8rem .6rem 0 0}
+input{box-sizing:border-box;width:100%;padding:.7rem;font:inherit}input[type=checkbox]{width:auto;padding:0;margin:.8rem .4rem 0 0}button{font:inherit;padding:.7rem 1rem;margin:.8rem .6rem 0 0}
 .note{color:#555}.error{color:#a00}
 </style></head><body><h1>设置 DeepSeek Harness</h1>
 <p>选择如何使用 DSH Web。已有服务请粘贴启动时输出的完整认证 URL（包含 <code>?token=...</code>）。你粘贴的 URL 只保存在本机插件目录，不会发送给 Codex。</p>
 <form method="post"><label for="url">已有 DSH Web 的认证 URL</label>
 <input id="url" name="url" type="url" placeholder="http://127.0.0.1:端口/?token=..." autocomplete="off">
+<label><input id="auto-archive" name="autoArchiveSuccessfulRuns" type="checkbox" value="true" __AUTO_ARCHIVE_CHECKED__> 成功后自动归档新建会话</label>
 <button name="mode" value="external">连接已有服务</button>
 <button name="mode" value="managed" formnovalidate>由插件启动新服务</button></form>
 <p id="status" role="status"></p>
@@ -65,9 +69,9 @@ function sendHtml(response: ServerResponse, status: number, html: string, nonce?
   response.end(html);
 }
 
-function sendSetupPage(response: ServerResponse, status: number, error = false): void {
+function sendSetupPage(response: ServerResponse, status: number, error = false, autoArchiveSuccessfulRuns = false): void {
   const nonce = randomBytes(16).toString("base64");
-  const page = PAGE.replace("__NONCE__", nonce);
+  const page = PAGE.replace("__NONCE__", nonce).replace("__AUTO_ARCHIVE_CHECKED__", autoArchiveSuccessfulRuns ? "checked" : "");
   sendHtml(response, status, error
     ? page.replace("<form method=\"post\">", "<p class=\"error\">设置失败。请检查完整认证 URL 和 DSH Web 状态后重试。</p><form method=\"post\">")
     : page, nonce);
@@ -77,6 +81,7 @@ function sendSetupPage(response: ServerResponse, status: number, error = false):
 export class ConnectionSetup {
   private readonly configPath: string;
   private readonly environmentUrl: string | undefined;
+  private readonly environmentAutoArchiveSuccessfulRuns: boolean | undefined;
   private choice: ConnectionChoice | null | undefined;
   private server: Server | null = null;
   private opening: Promise<SetupSnapshot> | null = null;
@@ -88,22 +93,27 @@ export class ConnectionSetup {
     private readonly dataDirectory: string,
     private readonly openBrowser: (url: string) => Promise<void>,
     environmentUrl: string | undefined = process.env.DSH_MCP_WEB_URL,
+    environmentAutoArchiveSuccessfulRuns: boolean | undefined = resolveAutoArchiveSuccessfulRuns(),
   ) {
     this.configPath = join(dataDirectory, "connection.json");
     this.environmentUrl = environmentUrl?.trim() || undefined;
+    this.environmentAutoArchiveSuccessfulRuns = environmentAutoArchiveSuccessfulRuns;
   }
 
   public async getChoice(): Promise<ConnectionChoice | null> {
-    if (this.environmentUrl !== undefined) return { mode: "external", url: this.environmentUrl };
+    if (this.environmentUrl !== undefined) {
+      return { mode: "external", url: this.environmentUrl, autoArchiveSuccessfulRuns: this.environmentAutoArchiveSuccessfulRuns ?? false };
+    }
     if (this.choice !== undefined) return this.choice;
     try {
       const stored: unknown = JSON.parse(await readFile(this.configPath, "utf8"));
       if (typeof stored === "object" && stored !== null) {
         const value = stored as Record<string, unknown>;
-        if (value.mode === "managed") return this.choice = { mode: "managed" };
+        const autoArchiveSuccessfulRuns = this.environmentAutoArchiveSuccessfulRuns ?? value.autoArchiveSuccessfulRuns === true;
+        if (value.mode === "managed") return this.choice = { mode: "managed", autoArchiveSuccessfulRuns };
         if (value.mode === "external" && typeof value.url === "string") {
           resolveExternalWebService({ DSH_MCP_WEB_URL: value.url });
-          return this.choice = { mode: "external", url: value.url };
+          return this.choice = { mode: "external", url: value.url, autoArchiveSuccessfulRuns };
         }
       }
     } catch {
@@ -121,6 +131,7 @@ export class ConnectionSetup {
         ? resolveExternalWebService({ DSH_MCP_WEB_URL: choice.url })?.webUrl ?? null : null,
       setupUrl: this.setupUrl,
       browserError: this.browserError,
+      autoArchiveSuccessfulRuns: choice?.autoArchiveSuccessfulRuns ?? this.environmentAutoArchiveSuccessfulRuns ?? false,
     };
   }
 
@@ -182,7 +193,8 @@ export class ConnectionSetup {
       return;
     }
     if (request.method === "GET") {
-      sendSetupPage(response, 200);
+      const choice = await this.getChoice();
+      sendSetupPage(response, 200, false, choice?.autoArchiveSuccessfulRuns ?? false);
       return;
     }
     if (request.method !== "POST" || request.headers.origin !== origin ||
@@ -198,24 +210,27 @@ export class ConnectionSetup {
       }
       const form = new URLSearchParams(body);
       const mode = form.get("mode");
+      const autoArchiveSuccessfulRuns = form.get("autoArchiveSuccessfulRuns") === "true";
       let choice: ConnectionChoice;
       if (mode === "managed") {
-        choice = { mode };
+        choice = { mode, autoArchiveSuccessfulRuns };
       } else if (mode === "external") {
         const url = form.get("url")?.trim() ?? "";
         const external = resolveExternalWebService({ DSH_MCP_WEB_URL: url });
         if (external === undefined || external.authenticationUrl === null) throw new Error("Authentication URL required.");
         await authenticateExternalWebService(external);
-        choice = { mode, url };
+        choice = { mode, url, autoArchiveSuccessfulRuns };
       } else {
         throw new Error("Unknown connection mode.");
       }
       await this.save(choice);
-      this.choice = choice;
+      this.choice = this.environmentAutoArchiveSuccessfulRuns === undefined
+        ? choice
+        : { ...choice, autoArchiveSuccessfulRuns: this.environmentAutoArchiveSuccessfulRuns };
       sendHtml(response, 200, "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><title>设置完成</title><h1>设置完成</h1><p>回到 Codex 继续任务。可以关闭此标签页。</p></html>");
       void this.close();
     } catch {
-      sendSetupPage(response, 400, true);
+      sendSetupPage(response, 400, true, this.choice?.autoArchiveSuccessfulRuns ?? false);
     }
   }
 

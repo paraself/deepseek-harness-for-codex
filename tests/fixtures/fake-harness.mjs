@@ -3,9 +3,14 @@ import { createServer } from "node:http";
 let nextWorkspace = 1;
 let nextSession = 1;
 const sessions = new Map();
+const archivedSessionIds = new Set();
 
 function ok(rpcId, value) {
   return { type: "server-response", rpcId, result: { ok: true, value } };
+}
+
+function fail(rpcId, code, message) {
+  return { type: "server-response", rpcId, result: { ok: false, error: { code, message } } };
 }
 
 const server = createServer((request, response) => {
@@ -64,6 +69,12 @@ const server = createServer((request, response) => {
       }
       session.events.push({ event: { type: "turn/start", seq: session.events.length, data: {} } });
       setTimeout(() => {
+        if (session.task === "fail") {
+          session.events.push({ event: { type: "agent/error", seq: session.events.length, data: { message: "agent failed" } } });
+          session.events.push({ event: { type: "turn/end", seq: session.events.length, data: { reason: "error" } } });
+          session.running = false;
+          return;
+        }
         session.events.push({
           event: {
             type: "assistant/message",
@@ -76,7 +87,7 @@ const server = createServer((request, response) => {
       }, 200);
       value = { accepted: true };
     } else if (method === "session/list") {
-      value = { items: [...sessions].map(([sessionId, session]) => ({
+      value = { items: [...sessions].filter(([sessionId]) => !archivedSessionIds.has(sessionId)).map(([sessionId, session]) => ({
         sessionId,
         running: session.running,
         blank: session.events.length === 0,
@@ -96,6 +107,14 @@ const server = createServer((request, response) => {
       session.title = args.request.title;
       session.events.push({ event: { type: "session/title", seq: session.events.length, data: { title: session.title, source: { kind: "user" } } } });
       value = { title: session.title, seq: session.events.at(-1).event.seq };
+    } else if (method === "workspace/archiveSession") {
+      if (process.env.FAKE_DSH_ARCHIVE_ERROR) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(fail(rpcId, "ARCHIVE_UNAVAILABLE", "archive unavailable")));
+        return;
+      }
+      archivedSessionIds.add(args.request.sessionId);
+      value = { archivedSessionIds: [...archivedSessionIds] };
     } else {
       value = {};
     }

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -69,6 +69,85 @@ describe("RunManager Web orchestration", () => {
     expect(completed.status).toBe("succeeded");
     expect(completed.assistantText).toBe("completed:implement feature");
     expect(completed.lastEventSeq).toBeGreaterThanOrEqual(3);
+  });
+
+  it("archives a newly-created successful session when enabled", async () => {
+    await mkdir(join(temporaryRoot, "data"));
+    await writeFile(join(temporaryRoot, "data", "connection.json"), JSON.stringify({ mode: "managed", autoArchiveSuccessfulRuns: true }));
+
+    const started = await manager.start({ task: "archive me", workspace });
+    const completed = await manager.wait(started.runId, 2_000);
+
+    expect(completed.status).toBe("succeeded");
+    expect(completed.sessionArchived).toBe(true);
+
+    const response = await fetch(`${started.webUrl}/api/session/list`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "client-request", rpcId: "archive-test", method: "session/list", payload: { args: { _request: {} } } }),
+    });
+    const body = await response.json() as { result: { value: { items: Array<{ sessionId: string }> } } };
+    expect(body.result.value.items.some((item) => item.sessionId === started.sessionId)).toBe(false);
+  });
+
+  it("does not archive failed or cancelled runs", async () => {
+    await mkdir(join(temporaryRoot, "data"));
+    await writeFile(join(temporaryRoot, "data", "connection.json"), JSON.stringify({ mode: "managed", autoArchiveSuccessfulRuns: true }));
+
+    const failed = await manager.start({ task: "fail", workspace });
+    const failedResult = await manager.wait(failed.runId, 2_000);
+    expect(failedResult.status).toBe("failed");
+    expect(failedResult.sessionArchived).toBe(false);
+
+    const cancelled = await manager.start({ task: "long task", workspace });
+    const cancelledResult = await manager.cancel(cancelled.runId);
+    expect(cancelledResult.status).toBe("cancelled");
+    expect(cancelledResult.sessionArchived).toBe(false);
+  });
+
+  it("keeps a successful reused session visible", async () => {
+    const first = await manager.start({ task: "first", workspace });
+    await manager.wait(first.runId, 2_000);
+    const serviceUrl = manager.listServices()[0]?.webUrl;
+    expect(serviceUrl).not.toBeNull();
+
+    const dataDirectory = join(temporaryRoot, "attached-data");
+    await mkdir(dataDirectory);
+    await writeFile(join(dataDirectory, "connection.json"), JSON.stringify({
+      mode: "external",
+      url: serviceUrl,
+      autoArchiveSuccessfulRuns: true,
+    }));
+    const attached = new RunManager({
+      dataDirectory,
+      allowedRoots: [temporaryRoot],
+      pollIntervalMs: 10,
+      spawnProcess: vi.fn(() => { throw new Error("must not spawn"); }),
+    });
+    try {
+      const continued = await attached.start({ task: "follow-up", workspace, sessionId: first.sessionId });
+      const completed = await attached.wait(continued.runId, 2_000);
+      expect(completed.status).toBe("succeeded");
+      expect(completed.sessionReused).toBe(true);
+      expect(completed.sessionArchived).toBe(false);
+    } finally {
+      await attached.close();
+    }
+  });
+
+  it("reports archive errors without failing the run", async () => {
+    await mkdir(join(temporaryRoot, "data"));
+    await writeFile(join(temporaryRoot, "data", "connection.json"), JSON.stringify({ mode: "managed", autoArchiveSuccessfulRuns: true }));
+    process.env.FAKE_DSH_ARCHIVE_ERROR = "1";
+    try {
+      const started = await manager.start({ task: "archive error", workspace });
+      const completed = await manager.wait(started.runId, 2_000);
+      expect(completed.status).toBe("succeeded");
+      expect(completed.sessionArchived).toBe(false);
+      expect(completed.archiveError).toContain("archive unavailable");
+    } finally {
+      delete process.env.FAKE_DSH_ARCHIVE_ERROR;
+    }
   });
 
   it("prefixes the generated title after the DSH title provider finishes", async () => {

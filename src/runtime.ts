@@ -38,6 +38,15 @@ export function resolveAllowedRoots(env: NodeJS.ProcessEnv = process.env): strin
     .filter(Boolean);
 }
 
+/** Resolves the optional successful-run auto-archive override. */
+export function resolveAutoArchiveSuccessfulRuns(env: NodeJS.ProcessEnv = process.env): boolean | undefined {
+  const configured = env.DSH_MCP_AUTO_ARCHIVE?.trim();
+  if (!configured) return undefined;
+  if (configured === "true") return true;
+  if (configured === "false") return false;
+  throw new Error("DSH_MCP_AUTO_ARCHIVE must be true or false.");
+}
+
 /** Resolves an optional existing loopback Harness Web service. */
 export function resolveExternalWebService(env: NodeJS.ProcessEnv = process.env): ExternalWebService | undefined {
   const configured = env.DSH_MCP_WEB_URL?.trim();
@@ -127,6 +136,7 @@ export function buildHarnessWebCommand(
 /** Returns local prerequisites without making a network request. */
 export function inspectRuntime(env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
   const externalWebService = resolveExternalWebService(env);
+  const autoArchiveSuccessfulRuns = resolveAutoArchiveSuccessfulRuns(env);
   const command = env.DSH_MCP_NPX_COMMAND?.trim() || (process.platform === "win32" ? "npx.cmd" : "npx");
   const probe = externalWebService === undefined
     ? spawnSync(command, ["--version"], { encoding: "utf8", shell: false, timeout: 5_000 })
@@ -149,6 +159,7 @@ export function inspectRuntime(env: NodeJS.ProcessEnv = process.env): Record<str
     apiKeyInEnvironment: Boolean(env.DEEPSEEK_API_KEY?.trim()),
     dataDirectory: resolveDataDirectory(env),
     allowedWorkspaceRoots: resolveAllowedRoots(env),
+    autoArchiveSuccessfulRuns: autoArchiveSuccessfulRuns ?? false,
     surface: "web",
   };
 }

@@ -34,6 +34,8 @@ export interface RunSnapshot {
   assistantText: string;
   lastEventSeq: number;
   error: string | null;
+  sessionArchived: boolean;
+  archiveError: string | null;
 }
 
 /** Inputs needed to start a visible Harness task. */

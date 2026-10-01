@@ -54,6 +54,8 @@ interface RunRecord {
   assistantText: string;
   lastEventSeq: number;
   error: string | null;
+  sessionArchived: boolean;
+  archiveError: string | null;
 }
 
 interface RpcEnvelope<T> {
@@ -319,6 +321,8 @@ export class RunManager {
       assistantText: "",
       lastEventSeq: startEventSeq,
       error: null,
+      sessionArchived: false,
+      archiveError: null,
     };
     this.runs.set(run.runId, run);
     if (!run.sessionReused) void this.prefixSessionTitle(service, sessionId);
@@ -497,6 +501,17 @@ export class RunManager {
         run.status = "succeeded";
         run.finishedAt = new Date();
       }
+      if (run.status === "succeeded" && !run.sessionReused) {
+        const choice = await this.connectionSetup.getChoice();
+        if (choice?.autoArchiveSuccessfulRuns) {
+          try {
+            await this.rpc(service, "workspace/archiveSession", { request: { sessionId: run.sessionId } });
+            run.sessionArchived = true;
+          } catch (error) {
+            run.archiveError = errorText(error);
+          }
+        }
+      }
       if (run.status !== "running") this.releaseSession(run);
     } catch (error) {
       run.error = errorText(error);
@@ -647,6 +662,8 @@ export class RunManager {
       assistantText: run.assistantText,
       lastEventSeq: run.lastEventSeq,
       error: run.error,
+      sessionArchived: run.sessionArchived,
+      archiveError: run.archiveError,
     };
   }
 }

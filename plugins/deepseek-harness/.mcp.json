@@ -11,6 +11,7 @@
         "DSH_MCP_HARNESS_PACKAGE",
         "DSH_MCP_NPX_COMMAND",
         "DSH_MCP_WEB_URL",
+        "DSH_MCP_AUTO_ARCHIVE",
         "DSH_MCP_WORKSPACE_ROOTS",
         "DSH_PERMISSION_MODE"
       ]
