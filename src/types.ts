@@ -35,6 +35,7 @@ export interface RunSnapshot {
   lastEventSeq: number;
   error: string | null;
   sessionArchived: boolean;
+  /** 归档或后续工作区清理失败的原因，不改变任务成功状态。 */
   archiveError: string | null;
 }
 

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { realpath, mkdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import WebSocket from "ws";
 import {
   buildHarnessWebCommand,
   authenticateExternalWebService,
@@ -41,6 +42,7 @@ interface ServiceRecord {
 interface RunRecord {
   runId: string;
   serviceId: string;
+  workspaceId: string;
   sessionId: string;
   sessionReused: boolean;
   startEventSeq: number;
@@ -67,6 +69,11 @@ interface SessionSummary {
   running: boolean;
   blank: boolean;
   projections?: { asOfSeq: number };
+}
+
+interface WorkspaceBaseline {
+  items: Array<{ workspaceId: string; sessionIds: string[] }>;
+  archivedSessionIds: string[];
 }
 
 interface HistoryEvent {
@@ -146,6 +153,8 @@ export class RunManager {
   private readonly starts = new Map<string, Promise<ServiceRecord>>();
   private readonly runs = new Map<string, RunRecord>();
   private readonly activeSessions = new Set<string>();
+  private readonly createdWorkspaces = new Set<string>();
+  private readonly workspaceOperations = new Map<string, Promise<unknown>>();
   private readonly dataDirectory: string;
   private readonly allowedRoots: string[];
   private readonly startupTimeoutMs: number;
@@ -263,9 +272,16 @@ export class RunManager {
     const serviceSnapshot = await this.startService({ workspace: input.workspace, openBrowser: false });
     if (serviceSnapshot.webUrl === null) throw new Error("Harness Web service did not provide a URL.");
     const service = this.requireService(serviceSnapshot.serviceId);
-    const workspaceResult = await this.rpc<{ workspace: { workspaceId: string } }>(service, "workspace/create", {
+    const run = await this.withWorkspaceLock(service.serviceId, () => this.createRun(service, input, task));
+    return this.refresh(run);
+  }
+
+  private async createRun(service: ServiceRecord, input: StartRunInput, task: string): Promise<RunRecord> {
+    if (service.webUrl === null) throw new Error("Harness Web service did not provide a URL.");
+    const workspaceResult = await this.rpc<{ workspace: { workspaceId: string }; created: boolean }>(service, "workspace/create", {
       request: { path: service.workspace },
     });
+    if (workspaceResult.created === true) this.createdWorkspaces.add(`${service.serviceId}:${workspaceResult.workspace.workspaceId}`);
     const requestedSessionId = input.sessionId?.trim();
     let sessionId: string;
     let startEventSeq = -1;
@@ -308,12 +324,13 @@ export class RunManager {
     const run: RunRecord = {
       runId: randomUUID(),
       serviceId: service.serviceId,
+      workspaceId: workspaceResult.workspace.workspaceId,
       sessionId,
       sessionReused: requestedSessionId !== undefined && requestedSessionId !== "",
       startEventSeq,
       task,
       workspace: service.workspace,
-      webUrl: serviceSnapshot.webUrl,
+      webUrl: service.webUrl,
       status: "running",
       cancelRequested: false,
       startedAt: new Date(),
@@ -326,7 +343,7 @@ export class RunManager {
     };
     this.runs.set(run.runId, run);
     if (!run.sessionReused) void this.prefixSessionTitle(service, sessionId);
-    return this.refresh(run);
+    return run;
   }
 
   /** Lists runs and refreshes their observable Web session state. */
@@ -464,7 +481,11 @@ export class RunManager {
     }
   }
 
-  private async refresh(run: RunRecord): Promise<RunSnapshot> {
+  private refresh(run: RunRecord): Promise<RunSnapshot> {
+    return this.withWorkspaceLock(run.serviceId, () => this.refreshUnlocked(run));
+  }
+
+  private async refreshUnlocked(run: RunRecord): Promise<RunSnapshot> {
     if (run.status !== "running") return this.runSnapshot(run);
     const service = this.requireService(run.serviceId);
     if (service.status !== "running") {
@@ -507,6 +528,11 @@ export class RunManager {
           try {
             await this.rpc(service, "workspace/archiveSession", { request: { sessionId: run.sessionId } });
             run.sessionArchived = true;
+            try {
+              await this.cleanEmptyWorkspace(service, run);
+            } catch (error) {
+              run.archiveError = `Workspace cleanup failed: ${errorText(error)}`;
+            }
           } catch (error) {
             run.archiveError = errorText(error);
           }
@@ -517,6 +543,84 @@ export class RunManager {
       run.error = errorText(error);
     }
     return this.runSnapshot(run);
+  }
+
+  // 创建会话与清理共用队列，避免检查为空后本插件又向该工作区创建会话。
+  private async withWorkspaceLock<T>(serviceId: string, operation: () => Promise<T>): Promise<T> {
+    const pending = (this.workspaceOperations.get(serviceId) ?? Promise.resolve()).catch(() => undefined).then(operation);
+    this.workspaceOperations.set(serviceId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.workspaceOperations.get(serviceId) === pending) this.workspaceOperations.delete(serviceId);
+    }
+  }
+
+  private async cleanEmptyWorkspace(service: ServiceRecord, run: RunRecord): Promise<void> {
+    const key = `${service.serviceId}:${run.workspaceId}`;
+    if (!this.createdWorkspaces.has(key)) return;
+    if ([...this.runs.values()].some((other) => other.serviceId === run.serviceId && other.workspaceId === run.workspaceId && other.status === "running")) return;
+    const baseline = await this.workspaceBaseline(service);
+    const workspace = baseline.items.find((item) => item.workspaceId === run.workspaceId);
+    if (workspace === undefined) {
+      this.createdWorkspaces.delete(key);
+      return;
+    }
+    if (!workspace.sessionIds.every((id) => baseline.archivedSessionIds.includes(id))) return;
+    const sessions = await this.rpc<{ items: SessionSummary[] }>(service, "session/list", { _request: {} });
+    if (sessions.items.some((session) => workspace.sessionIds.includes(session.sessionId) && session.running)) return;
+    // shortcut: DSH 没有原子的“空时删除”接口；其他客户端并发创建时仍可能移出分组，文件和历史始终保留。
+    await this.rpc(service, "workspace/delete", { request: { workspaceId: run.workspaceId } });
+    this.createdWorkspaces.delete(key);
+  }
+
+  /** 读取工作区流的第一份完整状态后取消订阅，保留 Cookie 认证。 */
+  private workspaceBaseline(service: ServiceRecord): Promise<WorkspaceBaseline> {
+    if (service.apiUrl === null) throw new Error("Harness Web service has no URL.");
+    const url = new URL("/api/remote.mux", service.apiUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    return new Promise((resolvePromise, reject) => {
+      const socket = new WebSocket(url, {
+        headers: service.cookie === null ? {} : { cookie: service.cookie },
+        handshakeTimeout: 15_000,
+        perMessageDeflate: false,
+      });
+      const streamId = `mcp-${randomUUID()}`;
+      let settled = false;
+      const timeout = setTimeout(() => finish(new Error("workspace/follow timed out.")), 15_000);
+      const finish = (error: Error | null, baseline?: WorkspaceBaseline): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "cancel", streamId }), () => socket.terminate());
+        } else {
+          socket.terminate();
+        }
+        if (error !== null) reject(error);
+        else resolvePromise(baseline!);
+      };
+      socket.on("open", () => socket.send(JSON.stringify({ type: "open", streamId, endpoint: "workspace/follow", payload: { args: {} } })));
+      socket.on("message", (data) => {
+        try {
+          const message = JSON.parse(data.toString()) as { type: string; streamId: string; value?: { type: string; value: WorkspaceBaseline }; error?: { message: string } };
+          if (message.streamId !== streamId) return;
+          if (message.type === "error") throw new Error(`workspace/follow failed: ${message.error?.message ?? "unknown error"}`);
+          if (message.type !== "item" || message.value?.type !== "baseline") throw new Error("workspace/follow did not provide a baseline.");
+          const baseline = message.value.value;
+          if (!Array.isArray(baseline.items) || !Array.isArray(baseline.archivedSessionIds) ||
+              !baseline.archivedSessionIds.every((id) => typeof id === "string") ||
+              !baseline.items.every((item) => typeof item.workspaceId === "string" && Array.isArray(item.sessionIds) && item.sessionIds.every((id) => typeof id === "string"))) {
+            throw new Error("workspace/follow returned an invalid baseline.");
+          }
+          finish(null, baseline);
+        } catch (error) {
+          finish(new Error(errorText(error)));
+        }
+      });
+      socket.on("error", (error) => finish(new Error(`workspace/follow failed: ${errorText(error)}`)));
+      socket.on("close", () => finish(new Error("workspace/follow closed before its baseline.")));
+    });
   }
 
   private async prefixSessionTitle(service: ServiceRecord, sessionId: string): Promise<void> {

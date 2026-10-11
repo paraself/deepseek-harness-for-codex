@@ -27,7 +27,7 @@ input{box-sizing:border-box;width:100%;padding:.7rem;font:inherit}input[type=che
 <p>选择如何使用 DSH Web。已有服务请粘贴启动时输出的完整认证 URL（包含 <code>?token=...</code>）。你粘贴的 URL 只保存在本机插件目录，不会发送给 Codex。</p>
 <form method="post"><label for="url">已有 DSH Web 的认证 URL</label>
 <input id="url" name="url" type="url" placeholder="http://127.0.0.1:端口/?token=..." autocomplete="off">
-<label><input id="auto-archive" name="autoArchiveSuccessfulRuns" type="checkbox" value="true" __AUTO_ARCHIVE_CHECKED__> 成功后自动归档新建会话</label>
+<label><input id="auto-archive" name="autoArchiveSuccessfulRuns" type="checkbox" value="true" __AUTO_ARCHIVE_CHECKED__> 成功后自动归档新建会话，并清理插件新建的空工作区</label>
 <button name="mode" value="external">连接已有服务</button>
 <button name="mode" value="managed" formnovalidate>由插件启动新服务</button></form>
 <p id="status" role="status"></p>

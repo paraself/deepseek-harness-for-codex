@@ -1,12 +1,51 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import { RunManager } from "../src/run-manager.js";
 import type { HarnessCommand } from "../src/runtime.js";
 
 const fixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-harness.mjs");
+
+interface WorkspaceBaseline {
+  items: Array<{ workspaceId: string; path: string; sessionIds: string[] }>;
+  archivedSessionIds: string[];
+}
+
+async function rpc<T>(webUrl: string, method: string, args: object): Promise<T> {
+  const response = await fetch(`${webUrl}/api/${method}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "client-request", rpcId: randomUUID(), method, payload: { args } }),
+  });
+  const body = await response.json() as { result: { ok: boolean; value: T; error?: { message: string } } };
+  if (!body.result.ok) throw new Error(body.result.error?.message ?? "RPC failed");
+  return body.result.value;
+}
+
+async function workspaceBaseline(webUrl: string, cookie?: string): Promise<WorkspaceBaseline> {
+  const streamId = randomUUID();
+  const url = new URL("/api/remote.mux", webUrl);
+  url.protocol = "ws:";
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url, cookie ? { headers: { cookie } } : {});
+    const timer = setTimeout(() => { socket.terminate(); reject(new Error("workspace baseline timed out")); }, 1_000);
+    socket.on("error", reject);
+    socket.on("close", () => clearTimeout(timer));
+    socket.on("open", () => socket.send(JSON.stringify({ type: "open", streamId, endpoint: "workspace/follow", payload: { args: {} } })));
+    socket.on("message", (data) => {
+      const frame = JSON.parse(data.toString()) as { type: string; streamId: string; value: { type: string; value: WorkspaceBaseline } };
+      if (frame.type === "item" && frame.streamId === streamId && frame.value.type === "baseline") {
+        socket.send(JSON.stringify({ type: "cancel", streamId }));
+        socket.close();
+        resolve(frame.value.value);
+      }
+    });
+  });
+}
 
 describe("RunManager Web orchestration", () => {
   let temporaryRoot: string;
@@ -37,6 +76,190 @@ describe("RunManager Web orchestration", () => {
   afterEach(async () => {
     await manager.close();
     await rm(temporaryRoot, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+  });
+
+  async function enableAutoArchive(): Promise<void> {
+    await mkdir(join(temporaryRoot, "data"));
+    await writeFile(join(temporaryRoot, "data", "connection.json"), JSON.stringify({ mode: "managed", autoArchiveSuccessfulRuns: true }));
+  }
+
+  async function fixtureState(webUrl: string): Promise<{ deleteRequests: number; followRequests: number; cancelledFollows: number; activeFollows: number }> {
+    return await (await fetch(`${webUrl}/__fixture_state`)).json();
+  }
+
+  it("removes its empty workspace registration while preserving the directory and archived history", async () => {
+    await enableAutoArchive();
+    const marker = join(workspace, "keep.txt");
+    await writeFile(marker, "user content");
+    const started = await manager.start({ task: "clean up workspace", workspace });
+    const completed = await manager.wait(started.runId, 2_000);
+
+    expect(completed.status).toBe("succeeded");
+    expect(completed.sessionArchived).toBe(true);
+    const baseline = await workspaceBaseline(started.webUrl!);
+    expect(baseline.items).toEqual([]);
+    expect(baseline.archivedSessionIds).toContain(started.sessionId);
+    expect((await stat(workspace)).isDirectory()).toBe(true);
+    expect(await readFile(marker, "utf8")).toBe("user content");
+    const page = await rpc<{ records: Array<{ event: { type: string; data: unknown } }> }>(started.webUrl!, "session/page", {
+      request: { address: { sessionId: started.sessionId }, throughSeq: completed.lastEventSeq },
+    });
+    expect(page.records.some(({ event }) => event.type === "assistant/message")).toBe(true);
+    expect(JSON.stringify(page.records)).toContain("completed:clean up workspace");
+    await manager.wait(started.runId, 2_000);
+    expect((await fixtureState(started.webUrl!)).deleteRequests).toBe(1);
+  });
+
+  it("retains a pre-existing workspace even when its new session is archived", async () => {
+    await enableAutoArchive();
+    const service = await manager.startService({ workspace });
+    const registered = await rpc<{ workspace: { workspaceId: string }; created: boolean }>(service.webUrl!, "workspace/create", { request: { path: workspace } });
+    expect(registered.created).toBe(true);
+
+    const started = await manager.start({ task: "existing workspace", workspace });
+    const completed = await manager.wait(started.runId, 2_000);
+    expect(completed.sessionArchived).toBe(true);
+    const baseline = await workspaceBaseline(service.webUrl!);
+    expect(baseline.items.map((item) => item.workspaceId)).toEqual([registered.workspace.workspaceId]);
+    expect(baseline.archivedSessionIds).toContain(started.sessionId);
+    expect((await fixtureState(service.webUrl!)).deleteRequests).toBe(0);
+  });
+
+  it("retains the workspace when automatic archive is disabled", async () => {
+    const started = await manager.start({ task: "keep visible", workspace });
+    const completed = await manager.wait(started.runId, 2_000);
+    expect(completed.status).toBe("succeeded");
+    expect(completed.sessionArchived).toBe(false);
+    const baseline = await workspaceBaseline(started.webUrl!);
+    expect(baseline.items).toHaveLength(1);
+    expect(baseline.items[0]?.sessionIds).toEqual([started.sessionId]);
+    expect(baseline.archivedSessionIds).toEqual([]);
+    expect((await fixtureState(started.webUrl!)).deleteRequests).toBe(0);
+  });
+
+  it("removes a shared new workspace only after the last concurrent session is archived", async () => {
+    await enableAutoArchive();
+    const first = await manager.start({ task: "first shared", workspace });
+    const second = await manager.start({ task: "long task", workspace });
+    expect((await manager.wait(first.runId, 2_000)).sessionArchived).toBe(true);
+
+    const beforeLast = await workspaceBaseline(first.webUrl!);
+    expect(beforeLast.items).toHaveLength(1);
+    expect(beforeLast.items[0]?.sessionIds).toEqual([first.sessionId, second.sessionId]);
+    expect(beforeLast.archivedSessionIds).toEqual([first.sessionId]);
+    expect((await fixtureState(first.webUrl!)).deleteRequests).toBe(0);
+
+    const completed = await manager.wait(second.runId, 2_000);
+    expect(completed.status).toBe("succeeded");
+    expect(completed.sessionArchived).toBe(true);
+    const afterLast = await workspaceBaseline(first.webUrl!);
+    expect(afterLast.items).toEqual([]);
+    expect(afterLast.archivedSessionIds.sort()).toEqual([first.sessionId, second.sessionId].sort());
+    expect((await fixtureState(first.webUrl!)).deleteRequests).toBe(1);
+  });
+
+  it("retains a new workspace containing a blank unarchived session", async () => {
+    await enableAutoArchive();
+    const started = await manager.start({ task: "long task", workspace });
+    const current = await workspaceBaseline(started.webUrl!);
+    const blank = await rpc<{ sessionId: string }>(started.webUrl!, "session/create", { request: { workspaceId: current.items[0]!.workspaceId } });
+
+    expect((await manager.wait(started.runId, 2_000)).sessionArchived).toBe(true);
+    const baseline = await workspaceBaseline(started.webUrl!);
+    expect(baseline.items[0]?.sessionIds).toEqual([started.sessionId, blank.sessionId]);
+    expect(baseline.archivedSessionIds).toEqual([started.sessionId]);
+    expect((await fixtureState(started.webUrl!)).deleteRequests).toBe(0);
+  });
+
+  it("retains a new workspace containing another completed unarchived session", async () => {
+    await enableAutoArchive();
+    const started = await manager.start({ task: "long task", workspace });
+    const current = await workspaceBaseline(started.webUrl!);
+    const other = await rpc<{ sessionId: string }>(started.webUrl!, "session/create", { request: { workspaceId: current.items[0]!.workspaceId } });
+    await rpc(started.webUrl!, "session/prompt", { request: { requestId: randomUUID(), sessionId: other.sessionId, mode: "queue", content: [{ type: "text", text: "human task" }] } });
+
+    expect((await manager.wait(started.runId, 2_000)).sessionArchived).toBe(true);
+    const baseline = await workspaceBaseline(started.webUrl!);
+    expect(baseline.items[0]?.sessionIds).toEqual([started.sessionId, other.sessionId]);
+    expect(baseline.archivedSessionIds).toEqual([started.sessionId]);
+    const list = await rpc<{ items: Array<{ sessionId: string; blank: boolean; running: boolean }> }>(started.webUrl!, "session/list", { _request: {} });
+    expect(list.items.find((item) => item.sessionId === other.sessionId)).toMatchObject({ blank: false, running: false });
+    expect((await fixtureState(started.webUrl!)).deleteRequests).toBe(0);
+  });
+
+  it("retains a new workspace containing another archived session that is still running", async () => {
+    await enableAutoArchive();
+    const started = await manager.start({ task: "managed task", workspace });
+    const current = await workspaceBaseline(started.webUrl!);
+    const other = await rpc<{ sessionId: string }>(started.webUrl!, "session/create", { request: { workspaceId: current.items[0]!.workspaceId } });
+    await rpc(started.webUrl!, "session/prompt", { request: { requestId: randomUUID(), sessionId: other.sessionId, mode: "queue", content: [{ type: "text", text: "long task" }] } });
+    await rpc(started.webUrl!, "workspace/archiveSession", { request: { sessionId: other.sessionId } });
+
+    expect((await manager.wait(started.runId, 2_000)).sessionArchived).toBe(true);
+    const baseline = await workspaceBaseline(started.webUrl!);
+    expect(baseline.items[0]?.sessionIds).toEqual([started.sessionId, other.sessionId]);
+    expect(baseline.archivedSessionIds.sort()).toEqual([started.sessionId, other.sessionId].sort());
+    const list = await rpc<{ items: Array<{ sessionId: string; running: boolean }> }>(started.webUrl!, "session/list", { _request: {} });
+    expect(list.items.find((item) => item.sessionId === other.sessionId)?.running).toBe(true);
+    expect((await fixtureState(started.webUrl!)).deleteRequests).toBe(0);
+  });
+
+  it("reports workspace deletion failure while keeping the successful session archived", async () => {
+    await enableAutoArchive();
+    vi.stubEnv("FAKE_DSH_DELETE_ERROR", "1");
+    const started = await manager.start({ task: "delete fails", workspace });
+    const completed = await manager.wait(started.runId, 2_000);
+
+    expect(completed.status).toBe("succeeded");
+    expect(completed.sessionArchived).toBe(true);
+    expect(completed.archiveError).toEqual(expect.stringMatching(/workspace cleanup.*workspace deletion unavailable/i));
+    const baseline = await workspaceBaseline(started.webUrl!);
+    expect(baseline.items).toHaveLength(1);
+    expect(baseline.archivedSessionIds).toEqual([started.sessionId]);
+    await manager.wait(started.runId, 2_000);
+    expect((await fixtureState(started.webUrl!)).deleteRequests).toBe(1);
+  });
+
+  it("does not delete when the workspace baseline cannot be read", async () => {
+    await enableAutoArchive();
+    vi.stubEnv("FAKE_DSH_FOLLOW_ERROR", "1");
+    const started = await manager.start({ task: "snapshot fails", workspace });
+    const completed = await manager.wait(started.runId, 2_000);
+
+    expect(completed.status).toBe("succeeded");
+    expect(completed.sessionArchived).toBe(true);
+    expect(completed.archiveError).toEqual(expect.stringMatching(/workspace cleanup.*workspace snapshot unavailable/i));
+    expect((await fixtureState(started.webUrl!)).deleteRequests).toBe(0);
+    const existing = await rpc<{ created: boolean }>(started.webUrl!, "workspace/create", { request: { path: workspace } });
+    expect(existing.created).toBe(false);
+  });
+
+  it("reads fragmented baseline frames and cancels the persistent follow stream", async () => {
+    await enableAutoArchive();
+    vi.stubEnv("FAKE_DSH_FRAGMENT_FOLLOW", "1");
+    const started = await manager.start({ task: "fragmented follow", workspace });
+    const completed = await manager.wait(started.runId, 2_000);
+
+    expect(completed.status).toBe("succeeded");
+    expect(completed.sessionArchived).toBe(true);
+    expect(completed.archiveError).toBeNull();
+    await vi.waitFor(async () => {
+      expect(await fixtureState(started.webUrl!)).toMatchObject({ followRequests: 1, cancelledFollows: 1, activeFollows: 0, deleteRequests: 1 });
+    });
+    expect((await workspaceBaseline(started.webUrl!)).items).toEqual([]);
+  });
+
+  it("authenticates workspace cleanup on the WebSocket carrier", async () => {
+    await enableAutoArchive();
+    vi.stubEnv("FAKE_DSH_AUTH_TOKEN", "test-token");
+    const started = await manager.start({ task: "authenticated cleanup", workspace });
+    const completed = await manager.wait(started.runId, 2_000);
+
+    expect(completed.status).toBe("succeeded");
+    expect(completed.sessionArchived).toBe(true);
+    expect(completed.archiveError).toBeNull();
+    expect((await workspaceBaseline(started.webUrl!, "fake_dsh=authenticated")).items).toEqual([]);
   });
 
   it("starts the Web service and opens its page", async () => {
@@ -81,13 +304,9 @@ describe("RunManager Web orchestration", () => {
     expect(completed.status).toBe("succeeded");
     expect(completed.sessionArchived).toBe(true);
 
-    const response = await fetch(`${started.webUrl}/api/session/list`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type: "client-request", rpcId: "archive-test", method: "session/list", payload: { args: { _request: {} } } }),
-    });
-    const body = await response.json() as { result: { value: { items: Array<{ sessionId: string }> } } };
-    expect(body.result.value.items.some((item) => item.sessionId === started.sessionId)).toBe(false);
+    expect((await workspaceBaseline(started.webUrl!)).archivedSessionIds).toContain(started.sessionId);
+    const list = await rpc<{ items: Array<{ sessionId: string }> }>(started.webUrl!, "session/list", { _request: {} });
+    expect(list.items.some((item) => item.sessionId === started.sessionId)).toBe(true);
   });
 
   it("does not archive failed or cancelled runs", async () => {
@@ -103,6 +322,11 @@ describe("RunManager Web orchestration", () => {
     const cancelledResult = await manager.cancel(cancelled.runId);
     expect(cancelledResult.status).toBe("cancelled");
     expect(cancelledResult.sessionArchived).toBe(false);
+    const baseline = await workspaceBaseline(failed.webUrl!);
+    expect(baseline.items).toHaveLength(1);
+    expect(baseline.items[0]?.sessionIds).toEqual([failed.sessionId, cancelled.sessionId]);
+    expect(baseline.archivedSessionIds).toEqual([]);
+    expect((await fixtureState(failed.webUrl!)).deleteRequests).toBe(0);
   });
 
   it("keeps a successful reused session visible", async () => {
@@ -130,6 +354,8 @@ describe("RunManager Web orchestration", () => {
       expect(completed.status).toBe("succeeded");
       expect(completed.sessionReused).toBe(true);
       expect(completed.sessionArchived).toBe(false);
+      expect((await workspaceBaseline(continued.webUrl!)).items).toHaveLength(1);
+      expect((await fixtureState(continued.webUrl!)).deleteRequests).toBe(0);
     } finally {
       await attached.close();
     }
@@ -145,6 +371,8 @@ describe("RunManager Web orchestration", () => {
       expect(completed.status).toBe("succeeded");
       expect(completed.sessionArchived).toBe(false);
       expect(completed.archiveError).toContain("archive unavailable");
+      expect((await workspaceBaseline(started.webUrl!)).items).toHaveLength(1);
+      expect((await fixtureState(started.webUrl!)).deleteRequests).toBe(0);
     } finally {
       delete process.env.FAKE_DSH_ARCHIVE_ERROR;
     }

@@ -8,179 +8,157 @@
   <img src="./assets/icon.png" width="128" alt="DeepSeek Harness for Codex icon">
 </p>
 
-DeepSeek Harness for Codex lets Codex start [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) locally, return a clickable live-session link, delegate work to it, and then independently review the resulting workspace changes.
+Let Codex connect to or start local [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness), delegate tasks, return clickable live Web session links, and independently check actual changes and test results. This README describes [main in the paraself fork](https://github.com/paraself/deepseek-harness-for-codex).
 
 ![DeepSeek Harness for Codex demo](./imgs/examples.gif)
 
-## Quick start
+## Features
 
-Use the Codex plugin unless you specifically need a standalone MCP server. The plugin installs both the MCP tools and the instructions that tell Codex to review Harness's work independently.
+- Connect to existing DSH Web or let the plugin start a local service.
+- Run tasks in visible sessions; create new sessions or continue completed conversations.
+- Optionally archive successful new sessions and remove empty workspace registrations created by the plugin.
+- The plugin includes the MCP server and delegation workflow; Codex independently verifies the result.
 
-### 1. Check the requirements
+## Installation
 
-- Node.js 22 or later, including `npx`
-- A Codex client with plugin support
-- A DeepSeek API key
-
-Put the API key in the target repository's ignored `.env` file:
-
-```dotenv
-DEEPSEEK_API_KEY=your-key
-```
-
-Do not commit this file. You can instead provide `DEEPSEEK_API_KEY` to the environment that starts Codex, or configure the key later in the opened Harness page under **Settings → Models**.
-
-### 2. Install the plugin
-
-Copy these two commands into a terminal:
+You need a Codex client with plugin support, Node.js 22 or later (including `npx`), and a DeepSeek API key.
 
 ```sh
 codex plugin marketplace add paraself/deepseek-harness-for-codex --ref main
 codex plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
-On macOS, if `codex` is not found or another global installation shadows the desktop client, use the executable bundled with the app:
+Restart Codex after installation to load the new plugin code. On macOS, if `codex` is missing or points to another installation, use the Codex CLI supplied with your current desktop client; its path depends on the client and installation. No separate MCP registration is needed.
 
-```sh
-CODEX_APP_BIN="/Applications/ChatGPT.app/Contents/Resources/codex"
-"$CODEX_APP_BIN" plugin marketplace add paraself/deepseek-harness-for-codex --ref main
-"$CODEX_APP_BIN" plugin add deepseek-harness@deepseek-harness-for-codex
+For a plugin-managed service, you can put the API key in an uncommitted `.env` file at the target repository root:
+
+```dotenv
+DEEPSEEK_API_KEY=your-key
 ```
 
-### 3. Start a new Codex task
+Alternatively, pass `DEEPSEEK_API_KEY` to the environment that starts Codex, or configure it in Harness under **Settings → Models**. For an existing service, configure its own Models settings or startup environment; it may not read the target repository `.env`.
 
-Plugins are loaded when a task starts. Create a new task in Codex and ask it to use DeepSeek Harness, for example:
+## First-use setup
 
-> Use DeepSeek Harness to implement this change in a visible local session. Open the setup page on first use; give me the live Harness session link, then review the diff and run the relevant checks yourself.
+The first `start_run` or `start_service` opens a local setup page automatically. After you choose a connection, Codex waits for `wait_setup` to report configuration, then retries the original call.
 
-On first use, the plugin opens a local setup page. Choose an existing DSH Web service by pasting its full startup authentication URL, or let the plugin start a new service; the page also controls whether successful new sessions are archived automatically. The choice is saved locally. Codex then submits the task, follows the visible session, and independently verifies the result. Later tasks do not automatically open the session page. No separate MCP registration is needed.
+| Connection | Action and behavior |
+| --- | --- |
+| Existing DSH Web | Paste the full startup authentication URL (including `?token=...`) only into the setup page, never into chat. After verification, the browser redirects to the service to sign in. |
+| Plugin-managed service | The plugin runs `dsh web --port 0`; the first run may download the Harness npm package. The MCP server itself is already bundled. |
 
-The MCP server is included with the plugin, so startup does not download it. Managed mode may still download the Harness npm package on its first run.
+The page also offers automatic archiving of successful new sessions and cleanup of empty workspaces created by the plugin. Choices are saved locally; ask Codex to call `open_setup` to change the connection or authentication URL.
 
-For an existing service, the setup page verifies the full authentication URL, including `?token=...`, saves it only in the plugin's private local data file, then redirects the browser to that service to sign in. MCP tools return only the token-free address to Codex. `DSH_MCP_WEB_URL` remains available as an environment override. `stop_service` and MCP shutdown only detach from an external DSH service. If DSH restarts with a new URL, ask Codex to call `open_setup` and update it.
+## Daily use
 
-## Migrating from the old name
+Give Codex a complete task, constraints, and acceptance criteria, for example:
 
-The project was renamed from `deepseek-harness-mcp` to `deepseek-harness-for-codex`. If you installed the old plugin, remove its plugin and marketplace before following the installation steps above:
+> Use DeepSeek Harness to implement this change. Give me the live session link, then review the actual diff and run the relevant checks yourself.
 
-```sh
-codex plugin remove deepseek-harness-mcp@deepseek-harness
-codex plugin marketplace remove deepseek-harness
-```
+Codex calls `start_run`, presents the returned `webUrl`, follows the result with `wait_run` or `get_run`, and independently verifies it. Tasks do not automatically open session pages; open the link yourself or explicitly ask Codex to use `open_service`.
 
-The old npm package is not replaced automatically. The default data directory remains `~/.deep-seek-harness-mcp`, so the new installation can continue using existing local Harness settings and sessions.
+Omitting `sessionId` creates a new session. Passing a `sessionId` from a completed run continues that conversation and returns only the new turn's output. A running session cannot be reused concurrently. Services remain available for reuse; `stop_service` cancels active tasks and stops plugin-managed services, but only disconnects from an external service without stopping its process.
 
 ## Update
-
-Refresh the marketplace and reinstall the plugin, then start a new Codex task:
 
 ```sh
 codex plugin marketplace upgrade deepseek-harness-for-codex
 codex plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
-## Uninstall
+Restart Codex after updating to load the new code. The following reference sections cover configuration, migration, and development.
+
+<details>
+<summary>MCP tools (12)</summary>
+
+| Tool | Purpose |
+| --- | --- |
+| `doctor` | Check Node, npx, package selection, credential visibility, data location, and workspace restrictions without downloads. |
+| `open_setup` | Open settings to change the connection and archive switch. |
+| `wait_setup` | Wait up to 30 seconds for settings to be saved. |
+| `start_service` | Start or reuse Web for a workspace and return its URL; does not open the browser by default. |
+| `open_service` | Open a running Harness page when the user explicitly requests it. |
+| `list_services` | List services managed by the current MCP process and their URLs. |
+| `stop_service` | Cancel active tasks; stop a managed service or disconnect from an external service. |
+| `start_run` | Create a new session or continue a completed session, submit a task, and return `runId` and `webUrl`. |
+| `wait_run` | Wait up to 30 seconds for a session result. |
+| `get_run` | Read session state and assistant output. |
+| `list_runs` | List runs created by the current MCP process. |
+| `cancel_run` | Cancel the current agent turn while keeping Web available. |
+
+</details>
+
+<details>
+<summary>Configuration, permissions, and automatic cleanup</summary>
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DSH_MCP_DATA_DIR` | `PLUGIN_DATA`, then `~/.deep-seek-harness-mcp` | Local settings and session data; an explicit value takes priority. |
+| `DSH_MCP_WORKSPACE_ROOTS` | unrestricted | Allowed absolute roots, separated by the platform's path delimiter. |
+| `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.5-rc.2` | npm package version for plugin-managed services. |
+| `DSH_MCP_NPX_COMMAND` | `npx` (`npx.cmd` on Windows) | Alternate npx path. |
+| `DSH_MCP_WEB_URL` | unset | Full loopback authentication URL overriding the saved connection choice. |
+| `DSH_MCP_AUTO_ARCHIVE` | unset | `true`/`false` override for the archive and cleanup switch; off by default. |
+| `DSH_PERMISSION_MODE` | `workspace-write` | Permission mode for plugin-managed Harness. |
+| `DEEPSEEK_BASE_URL` | provider default | Optional DeepSeek-compatible API endpoint. |
+
+Environment variables override corresponding page settings. Choices are saved in `connection.json` in the data directory; token-containing files are created with `0600` permissions on Unix and must not be committed. Tools return only token-free URLs.
+
+Automatic archiving applies only to successful new sessions; failed, cancelled, and reused sessions are not archived. Cleanup then removes only workspace registrations **created by the current MCP process**, requiring every session in the workspace to be archived and no running sessions or active plugin tasks. Existing workspaces and those with unarchived sessions remain. Removal affects only sidebar registration: directories, files, and session history remain. Archive or cleanup errors are recorded in `archiveError` without changing a successful run's status.
+
+DSH has no atomic delete-if-empty operation; a session created by another client between checking and deletion may become ungrouped.
+
+`start_run` can modify files and requires an existing absolute workspace, resolving symlinks. Use `DSH_MCP_WORKSPACE_ROOTS` to restrict access; processes are launched with argv. Managed Web binds only to loopback and selects a free port; Harness child-process telemetry is disabled by default.
+
+</details>
+
+<details>
+<summary>Old-name migration and uninstall</summary>
+
+If you installed `deepseek-harness-mcp`, remove the old plugin and marketplace, then follow Installation above:
+
+```sh
+codex plugin remove deepseek-harness-mcp@deepseek-harness
+codex plugin marketplace remove deepseek-harness
+```
+
+The old npm package is not replaced automatically. The final data-directory fallback remains `~/.deep-seek-harness-mcp`; using the same directory retains existing settings and sessions. To uninstall the current plugin:
 
 ```sh
 codex plugin remove deepseek-harness@deepseek-harness-for-codex
 codex plugin marketplace remove deepseek-harness-for-codex
 ```
 
-## Standalone MCP installation
+</details>
 
-Use this only when you need the MCP tools without the plugin's delegation instructions and Codex UI entry:
+<details>
+<summary>Standalone MCP installation</summary>
+
+For MCP tools alone, install from the fork's main branch. This does not include the plugin delegation workflow or Codex UI entry:
 
 ```sh
-npm install --global 'github:paraself/deepseek-harness-for-codex#paraself-v0.4.1-bundled-mcp.1'
+npm install --global 'github:paraself/deepseek-harness-for-codex#main'
 codex mcp add deepseek-harness -- deepseek-harness-for-codex
 ```
 
-Start a new Codex task after registration.
+Restart Codex after registration. Use main to follow fork updates.
 
-## How it works
+</details>
 
-The plugin launches its bundled MCP server directly. Without a saved choice, the first `start_run` or `start_service` opens a loopback-only setup page. After the user chooses, Codex retries the call. Managed mode runs `@deepseek-ai/dsh web --port 0`; existing-service mode connects to the chosen Web service without launching another DSH process.
+<details>
+<summary>Local development and npm publishing</summary>
 
-Each run is fresh and asynchronous:
-
-1. Codex calls `start_run` with an absolute workspace and a complete task. If first-use setup is pending, it waits with `wait_setup` and retries the call after configuration.
-2. The MCP server starts or reuses Harness Web, submits a visible session, and returns its page URL to Codex.
-3. Codex presents a clickable link; the user opens it when needed while Codex follows the same session with `wait_run` or `get_run`.
-4. Codex inspects the resulting diff and runs its own verification.
-
-## MCP tools
-
-| Tool | Purpose |
-| --- | --- |
-| `doctor` | Check Node, npx, package selection, credential visibility, data location, and workspace restrictions. |
-| `open_setup` | Open the local setup page to change the connection choice. |
-| `wait_setup` | Wait up to 30 seconds for the setup page to save a choice. |
-| `start_service` | Start or reuse Harness Web for a workspace and return its URL without opening the browser by default. |
-| `open_service` | Open a running Harness page when the user explicitly requests it. |
-| `list_services` | List local Harness Web services and URLs. |
-| `stop_service` | Stop a Harness Web service. |
-| `start_run` | Create a new visible session or continue a completed session selected by Codex, then submit a task. |
-| `wait_run` | Wait up to 30 seconds for the visible session. |
-| `get_run` | Read state and assistant text from the Web session. |
-| `list_runs` | List runs owned by the current MCP server process. |
-| `cancel_run` | Cancel the agent turn while keeping Web available. |
-
-The first-use setup page opens automatically. Selecting an existing service redirects the browser there to sign in; later runs do not automatically open the session page. Both `start_service` and `start_run` still default `openBrowser` to `false`. Codex should render the returned `webUrl` as a clickable link and use `open_service` only when the user asks it to open the session page.
-
-## Configuration
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `DSH_MCP_DATA_DIR` | `~/.deep-seek-harness-mcp` | Persistent per-workspace Harness Web settings and sessions. |
-| `DSH_MCP_WORKSPACE_ROOTS` | unrestricted | Platform-delimited absolute roots that may be passed to `start_run`. |
-| `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.5-rc.2` | Exact npm package used for the local Harness process. |
-| `DSH_MCP_NPX_COMMAND` | `npx` | Alternate path to `npx`. |
-| `DSH_MCP_WEB_URL` | unset | Optional override of the saved choice; use the full loopback authentication URL printed at DSH startup. |
-| `DSH_MCP_AUTO_ARCHIVE` | unset | Optional `true`/`false` override for the setup-page archive switch; when enabled, only successful newly-created sessions are archived. |
-| `DSH_PERMISSION_MODE` | `workspace-write` | DeepSeek Harness permission mode. |
-| `DEEPSEEK_BASE_URL` | provider default | Optional DeepSeek-compatible API endpoint. |
-
-The setup page saves the choice in `DSH_MCP_DATA_DIR/connection.json`. Failed, cancelled, and reused sessions are not archived; an archive failure leaves the run successful and is returned as `archiveError`. On Unix, a file containing a token is created with `0600` permissions and must not be committed. Telemetry is disabled for Harness child processes by default. The Web service binds to loopback and selects a free port. Session data remains in the configured data directory for local audit.
-
-## Security model
-
-`start_run` is a write-capable tool. The server requires an existing absolute workspace, resolves symlinks, uses argv instead of a shell, and can restrict allowed roots with `DSH_MCP_WORKSPACE_ROOTS`. Harness Web stays on loopback. The default permission mode is `workspace-write`; this project does not silently enable unrestricted host access.
-
-## Session model
-
-Every `start_run` lets Codex choose the session. Omitting `sessionId` creates a new visible Harness session. Passing a completed `sessionId` from an earlier run continues that conversation while returning only the new turn's output. A running session cannot be reused concurrently. The Web service is reused for later tasks in the same workspace until `stop_service` or MCP shutdown.
-
-## Local development
-
-Clone this repository, build the npm package, then add the checkout as a local marketplace:
+After cloning, run `npm ci`, `npm run check`, and `npm run build`, then add the checkout as a local marketplace:
 
 ```sh
-npm install
-npm run check
 codex plugin marketplace add /absolute/path/to/deepseek-harness-for-codex
 codex plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
-The installed plugin starts `plugins/deepseek-harness/dist/bin.mjs` directly without contacting GitHub at startup. For local MCP development, run `npm run build` and execute that file.
+The plugin runs `plugins/deepseek-harness/dist/bin.mjs` directly without contacting GitHub at startup. For local MCP development, execute this file after building. Restart Codex to load updates.
 
-## Publishing the npm package
+The npm package is named `deepseek-harness-for-codex` and publishes to `https://registry.npmjs.org/`.
 
-This repository publishes the public, unscoped `deepseek-harness-for-codex` package to the official npm registry. `npm publish` automatically runs the typecheck, test, and build gate. The package includes `plugins/deepseek-harness/dist/`, both README files, the demo GIF, `LICENSE`, and the package manifest.
+Before publishing, confirm your account with `npm login` and `npm whoami`, run `npm run release:check` to check tests and package contents, then run `npm publish`. `prepublishOnly` automatically runs `npm run check` (typecheck, tests, build, and bundle checks); this README does not imply that the fork's main has been published to npm.
 
-Authenticate and verify the account:
-
-```sh
-npm login --registry=https://registry.npmjs.org/
-npm whoami --registry=https://registry.npmjs.org/
-```
-
-Inspect the release, publish it, and verify the executable:
-
-```sh
-npm run release:check
-npm publish
-npm view deepseek-harness-for-codex version --registry=https://registry.npmjs.org/
-npx --yes --package=deepseek-harness-for-codex@<published-version> -- deepseek-harness-for-codex
-```
-
-An npm version cannot be overwritten. For later releases, update references in `package.json`, `.mcp.json`, and the MCP server metadata together, then run `npm version patch`, `npm version minor`, or `npm version major` before publishing.
+</details>

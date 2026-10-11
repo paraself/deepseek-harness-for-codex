@@ -50,10 +50,12 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
+    "ws": "8.22.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "22.20.0",
+    "@types/ws": "8.18.2",
     "tsdown": "0.22.14",
     "typescript": "6.0.3",
     "vitest": "4.1.10"
