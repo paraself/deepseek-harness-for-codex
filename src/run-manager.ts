@@ -12,7 +12,7 @@ import {
   type ExternalWebService,
   type HarnessCommand,
 } from "./runtime.js";
-import { ConnectionSetup, type SetupSnapshot } from "./setup.js";
+import { ConnectionSetup, type SetupInputHandler, type SetupSnapshot } from "./setup.js";
 import type { RunSnapshot, RunStatus, ServiceSnapshot, ServiceStatus, StartRunInput, StartServiceInput } from "./types.js";
 
 const READY_PATTERN = /dsh web: (http:\/\/[^\s]+)/;
@@ -172,18 +172,18 @@ export class RunManager {
     this.commandFactory = options.commandFactory ?? ((input) => buildHarnessWebCommand(input));
     this.spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
     this.openBrowserImpl = options.openBrowser ?? defaultOpenBrowser;
-    this.connectionSetup = new ConnectionSetup(this.dataDirectory, this.openBrowserImpl, options.externalWebUrl);
+    this.connectionSetup = new ConnectionSetup(this.dataDirectory, options.externalWebUrl);
   }
 
   /** Opens first-use setup only when no connection choice exists. */
-  public async ensureConnection(): Promise<SetupSnapshot> {
-    return this.connectionSetup.open();
+  public async ensureConnection(requestInput?: SetupInputHandler, signal?: AbortSignal): Promise<SetupSnapshot> {
+    return this.connectionSetup.open(false, requestInput, signal);
   }
 
-  /** Reopens the local setup page to change a saved choice. */
-  public async openSetup(): Promise<SetupSnapshot> {
+  /** 重新打开客户端设置表单，已有活动运行时不切换连接。 */
+  public async openSetup(requestInput?: SetupInputHandler, signal?: AbortSignal): Promise<SetupSnapshot> {
     if (this.activeSessions.size > 0) throw new Error("Finish active Harness runs before changing the connection.");
-    return this.connectionSetup.open(true);
+    return this.connectionSetup.open(true, requestInput, signal);
   }
 
   public async waitSetup(timeoutMs: number): Promise<SetupSnapshot> {
@@ -241,7 +241,8 @@ export class RunManager {
   public async openService(serviceId: string): Promise<ServiceSnapshot> {
     const service = this.requireService(serviceId);
     if (service.status !== "running" || service.webUrl === null) throw new Error("Harness Web service is not running.");
-    await this.openBrowserImpl(service.sourceUrl ?? service.webUrl);
+    try { await this.openBrowserImpl(service.sourceUrl ?? service.webUrl); }
+    catch (error) { throw new Error(this.redactServiceText(service, errorText(error))); }
     service.browserOpened = true;
     service.browserError = null;
     return this.serviceSnapshot(service);
@@ -330,7 +331,7 @@ export class RunManager {
       startEventSeq,
       task,
       workspace: service.workspace,
-      webUrl: service.webUrl,
+      webUrl: service.apiUrl ?? service.webUrl,
       status: "running",
       cancelRequested: false,
       startedAt: new Date(),
@@ -460,7 +461,7 @@ export class RunManager {
         service.stoppedAt = new Date();
         if (service.status === "starting") {
           service.status = "failed";
-          reject(new Error(`Harness Web service exited before readiness (code ${String(code)}, signal ${String(signal)}). ${service.log}`));
+          reject(new Error(`Harness Web service exited before readiness (code ${String(code)}, signal ${String(signal)}). ${this.redactServiceText(service, service.log)}`));
         } else if (service.status === "running") {
           service.status = code === 0 ? "stopped" : "failed";
         }
@@ -674,9 +675,9 @@ export class RunManager {
       body: JSON.stringify({ type: "client-request", rpcId: `mcp-${randomUUID()}`, method, payload: { args } }),
       signal: AbortSignal.timeout(15_000),
     });
-    if (!response.ok) throw new Error(`${method} failed over HTTP ${String(response.status)}: ${await response.text()}`);
+    if (!response.ok) throw new Error(`${method} failed over HTTP ${String(response.status)}: ${this.redactServiceText(service, await response.text())}`);
     const body = await response.json() as RpcEnvelope<T>;
-    if (!body.result.ok) throw new Error(`${method} failed: ${body.result.error.code}: ${body.result.error.message}`);
+    if (!body.result.ok) throw new Error(this.redactServiceText(service, `${method} failed: ${body.result.error.code}: ${body.result.error.message}`));
     return body.result.value;
   }
 
@@ -740,14 +741,27 @@ export class RunManager {
       serviceId: service.serviceId,
       workspace: service.workspace,
       status: service.status,
-      webUrl: service.webUrl,
+      webUrl: service.apiUrl,
       browserOpened: service.browserOpened,
-      browserError: service.browserError,
+      browserError: service.browserError === null ? null : this.redactServiceText(service, service.browserError),
       startedAt: service.startedAt.toISOString(),
       stoppedAt: service.stoppedAt?.toISOString() ?? null,
       processId: service.child?.pid ?? null,
-      logTail: service.log.slice(-4_000),
+      logTail: this.redactServiceText(service, service.log).slice(-4_000),
     };
+  }
+
+  // 原始启动 URL 用于浏览器登录；模型可见的日志和错误必须去掉认证 Token。
+  private redactServiceText(service: ServiceRecord, text: string): string {
+    let safe = text.replace(/([?&]token=)[^\s&#"'<>]*/g, "$1[redacted]");
+    const url = service.sourceUrl ?? service.webUrl;
+    if (url !== null) {
+      try {
+        const token = new URL(url).searchParams.get("token");
+        if (token) safe = safe.replaceAll(token, "[redacted]").replaceAll(encodeURIComponent(token), "[redacted]");
+      } catch { /* 未验证的启动输出仍由上面的查询参数脱敏处理。 */ }
+    }
+    return safe;
   }
 
   private runSnapshot(run: RunRecord): RunSnapshot {
@@ -765,9 +779,9 @@ export class RunManager {
       finishedAt: run.finishedAt?.toISOString() ?? null,
       assistantText: run.assistantText,
       lastEventSeq: run.lastEventSeq,
-      error: run.error,
+      error: run.error === null ? null : this.redactServiceText(this.requireService(run.serviceId), run.error),
       sessionArchived: run.sessionArchived,
-      archiveError: run.archiveError,
+      archiveError: run.archiveError === null ? null : this.redactServiceText(this.requireService(run.serviceId), run.archiveError),
     };
   }
 }

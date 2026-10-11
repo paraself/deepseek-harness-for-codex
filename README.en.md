@@ -40,14 +40,16 @@ Alternatively, pass `DEEPSEEK_API_KEY` to the environment that starts Codex, or 
 
 ## First-use setup
 
-The first `start_run` or `start_service` opens a local setup page automatically. After you choose a connection, Codex waits for `wait_setup` to report configuration, then retries the original call.
+The first `start_run` or `start_service` requests an MCP setup form inside Codex. After submission, the plugin validates and saves the settings, then continues the original call without opening a setup webpage. Cancelling saves nothing and starts no service; existing settings remain.
 
 | Connection | Action and behavior |
 | --- | --- |
-| Existing DSH Web | Paste the full startup authentication URL (including `?token=...`) only into the setup page, never into chat. After verification, the browser redirects to the service to sign in. |
+| Existing DSH Web | Paste the full startup authentication URL (including `?token=...`) into the form, never into chat. The plugin validates the loopback URL and tests authentication; invalid input prompts another form. |
 | Plugin-managed service | The plugin runs `dsh web --port 0`; the first run may download the Harness npm package. The MCP server itself is already bundled. |
 
-The page also offers automatic archiving of successful new sessions and cleanup of empty workspaces created by the plugin. Choices are saved locally; ask Codex to call `open_setup` to change the connection or authentication URL.
+The form also offers automatic archiving of successful new sessions and cleanup of empty workspaces created by the plugin. Choices are saved locally; ask Codex to call `open_setup` to change the connection or authentication URL. The URL is never prefilled or echoed in errors or tool results. MCP form input returns directly to the plugin rather than becoming a model question response. The Codex client still handles the input and may record local logs.
+
+The client must support MCP form elicitation. Otherwise, the plugin asks you to update the client or configure `DSH_MCP_WEB_URL` locally; it does not fall back to a webpage.
 
 ## Daily use
 
@@ -55,7 +57,7 @@ Give Codex a complete task, constraints, and acceptance criteria, for example:
 
 > Use DeepSeek Harness to implement this change. Give me the live session link, then review the actual diff and run the relevant checks yourself.
 
-Codex calls `start_run`, presents the returned `webUrl`, follows the result with `wait_run` or `get_run`, and independently verifies it. Tasks do not automatically open session pages; open the link yourself or explicitly ask Codex to use `open_service`.
+Codex calls `start_run`, presents the returned `webUrl`, follows the result with `wait_run` or `get_run`, and independently verifies it. Tasks do not automatically open session pages; open the link yourself or explicitly ask Codex to use `open_service`. If the browser is not signed in, `open_service` uses the privately stored authentication URL to open it, while tool results still return only the sanitized address.
 
 Omitting `sessionId` creates a new session. Passing a `sessionId` from a completed run continues that conversation and returns only the new turn's output. A running session cannot be reused concurrently. Services remain available for reuse; `stop_service` cancels active tasks and stops plugin-managed services, but only disconnects from an external service without stopping its process.
 
@@ -74,8 +76,8 @@ Restart Codex after updating to load the new code. The following reference secti
 | Tool | Purpose |
 | --- | --- |
 | `doctor` | Check Node, npx, package selection, credential visibility, data location, and workspace restrictions without downloads. |
-| `open_setup` | Open settings to change the connection and archive switch. |
-| `wait_setup` | Wait up to 30 seconds for settings to be saved. |
+| `open_setup` | Open the native Codex MCP form to change the connection and archive switch. |
+| `wait_setup` | Wait up to 30 seconds for an already open setup form to finish. |
 | `start_service` | Start or reuse Web for a workspace and return its URL; does not open the browser by default. |
 | `open_service` | Open a running Harness page when the user explicitly requests it. |
 | `list_services` | List services managed by the current MCP process and their URLs. |
@@ -102,7 +104,7 @@ Restart Codex after updating to load the new code. The following reference secti
 | `DSH_PERMISSION_MODE` | `workspace-write` | Permission mode for plugin-managed Harness. |
 | `DEEPSEEK_BASE_URL` | provider default | Optional DeepSeek-compatible API endpoint. |
 
-Environment variables override corresponding page settings. Choices are saved in `connection.json` in the data directory; token-containing files are created with `0600` permissions on Unix and must not be committed. Tools return only token-free URLs.
+Environment variables override corresponding settings. Choices remain in `connection.json` in the data directory, and existing configurations still work. Token-containing files are created with `0600` permissions on Unix and must not be committed. Tools return token-free URLs and redact authentication tokens from startup logs and connection errors.
 
 Automatic archiving applies only to successful new sessions; failed, cancelled, and reused sessions are not archived. Cleanup then removes only workspace registrations **created by the current MCP process**, requiring every session in the workspace to be archived and no running sessions or active plugin tasks. Existing workspaces and those with unarchived sessions remain. Removal affects only sidebar registration: directories, files, and session history remain. Archive or cleanup errors are recorded in `archiveError` without changing a successful run's status.
 

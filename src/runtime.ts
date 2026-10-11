@@ -70,14 +70,14 @@ export function resolveExternalWebService(env: NodeJS.ProcessEnv = process.env):
 }
 
 /** Verifies an existing Web service and returns its session cookie without exposing the token. */
-export async function authenticateExternalWebService(external: ExternalWebService): Promise<string | null> {
+export async function authenticateExternalWebService(external: ExternalWebService, signal?: AbortSignal): Promise<string | null> {
   let cookie: string | null = null;
   if (external.authenticationUrl !== null) {
     let authentication: Response;
     try {
       authentication = await fetch(external.authenticationUrl, {
         redirect: "manual",
-        signal: AbortSignal.timeout(15_000),
+        signal: signal === undefined ? AbortSignal.timeout(15_000) : AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
       });
     } catch {
       throw new Error("Could not authenticate with the existing Harness Web service.");
@@ -93,7 +93,7 @@ export async function authenticateExternalWebService(external: ExternalWebServic
   try {
     response = await fetch(external.webUrl, {
       ...(cookie === null ? {} : { headers: { cookie } }),
-      signal: AbortSignal.timeout(15_000),
+      signal: signal === undefined ? AbortSignal.timeout(15_000) : AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
     });
   } catch {
     throw new Error("Could not connect to the existing Harness Web service.");

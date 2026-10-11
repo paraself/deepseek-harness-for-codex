@@ -40,14 +40,16 @@ DEEPSEEK_API_KEY=your-key
 
 ## 首次设置
 
-首次调用 `start_run` 或 `start_service` 时，插件自动打开本地设置页。选择连接方式后，Codex 等待 `wait_setup` 返回已配置，再重试原调用。
+首次调用 `start_run` 或 `start_service` 时，插件在 Codex 内发起 MCP 设置表单。提交后插件验证并保存设置，原调用继续执行，无需打开设置网页。取消时不保存、不启动服务；已有设置保留。
 
 | 连接方式 | 操作与影响 |
 | --- | --- |
-| 已有 DSH Web | 只在设置页粘贴 DSH 启动时输出的完整认证 URL（含 `?token=...`），不要贴进聊天。验证后浏览器跳转到该服务完成登录。 |
+| 已有 DSH Web | 在表单中粘贴 DSH 启动时输出的完整认证 URL（含 `?token=...`），不要贴进聊天。插件校验本机地址并测试认证连接；失败时提示重新填写。 |
 | 插件启动服务 | 插件运行 `dsh web --port 0`；首次可能下载 Harness npm 包，MCP 本身已随插件安装。 |
 
-设置页也可开启“成功后自动归档新建会话，并清理插件新建的空工作区”。选择保存在本地；更改连接或认证 URL 时，让 Codex 调用 `open_setup`。
+表单也可开启“成功后自动归档新建会话，并清理插件新建的空工作区”。选择保存在本地；更改连接或认证 URL 时，让 Codex 调用 `open_setup`。URL 不预填，也不回显到错误或工具结果；输入通过 MCP 表单直接返回插件，不作为模型问答答案。Codex 客户端仍会接触输入，可能记录本地日志。
+
+客户端需支持 MCP 表单输入；不支持时插件给出升级客户端或在本机配置 `DSH_MCP_WEB_URL` 的提示，不会改用网页。
 
 ## 日常使用
 
@@ -55,7 +57,7 @@ DEEPSEEK_API_KEY=your-key
 
 > 使用 DeepSeek Harness 实现这个需求。把实时会话链接发给我，完成后检查实际 diff 并运行相关测试。
 
-Codex 调用 `start_run`，展示返回的 `webUrl`，通过 `wait_run` 或 `get_run` 跟踪结果，最后独立验证。任务不会自动打开会话页；需要时手动打开链接，或明确要求 Codex 使用 `open_service`。
+Codex 调用 `start_run`，展示返回的 `webUrl`，通过 `wait_run` 或 `get_run` 跟踪结果，最后独立验证。任务不会自动打开会话页；需要时手动打开链接，或明确要求 Codex 使用 `open_service`。若浏览器尚未登录，`open_service` 可使用插件私下保存的认证 URL 打开页面，工具结果仍只返回脱敏地址。
 
 省略 `sessionId` 会新建会话；传入之前已完成运行的 `sessionId` 可继续原对话，只返回本轮新增输出。运行中的会话不能并发复用。服务会持续复用；`stop_service` 会取消活动任务，并停止插件启动的服务，对已有外部服务只断开连接、不停止其进程。
 
@@ -74,8 +76,8 @@ codex plugin add deepseek-harness@deepseek-harness-for-codex
 | 工具 | 用途 |
 | --- | --- |
 | `doctor` | 检查 Node、npx、包版本、凭据可见性、数据目录和工作区限制，不下载包。 |
-| `open_setup` | 打开设置页，修改连接方式和归档开关。 |
-| `wait_setup` | 等待设置保存，单次最多 30 秒。 |
+| `open_setup` | 打开 Codex 内置 MCP 表单，修改连接方式和归档开关。 |
+| `wait_setup` | 等待已打开的设置表单完成，单次最多 30 秒。 |
 | `start_service` | 为工作区启动或复用 Web 服务，返回链接；默认不打开浏览器。 |
 | `open_service` | 在用户明确要求时打开正在运行的 Harness 页面。 |
 | `list_services` | 列出当前 MCP 进程管理的服务及链接。 |
@@ -97,12 +99,12 @@ codex plugin add deepseek-harness@deepseek-harness-for-codex
 | `DSH_MCP_WORKSPACE_ROOTS` | 不限制 | 允许访问的绝对根目录列表，使用当前平台的路径分隔符。 |
 | `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.5-rc.2` | 插件启动服务时使用的 npm 包版本。 |
 | `DSH_MCP_NPX_COMMAND` | `npx`（Windows 为 `npx.cmd`） | 自定义 npx 路径。 |
-| `DSH_MCP_WEB_URL` | 未设置 | 用完整回环认证 URL 覆盖设置页的连接选择。 |
-| `DSH_MCP_AUTO_ARCHIVE` | 未设置 | `true`/`false` 覆盖设置页的归档与清理开关，默认关闭。 |
+| `DSH_MCP_WEB_URL` | 未设置 | 用完整回环认证 URL 覆盖保存的连接选择。 |
+| `DSH_MCP_AUTO_ARCHIVE` | 未设置 | `true`/`false` 覆盖保存的归档与清理开关，默认关闭。 |
 | `DSH_PERMISSION_MODE` | `workspace-write` | 插件启动的 Harness 的权限模式。 |
 | `DEEPSEEK_BASE_URL` | 服务商默认值 | 可选的 DeepSeek 兼容 API 地址。 |
 
-环境变量覆盖对应页面设置。设置保存在数据目录的 `connection.json`；含 Token 的文件在 Unix 上以 `0600` 权限创建，不得提交。工具只返回不含 Token 的地址。
+环境变量覆盖对应设置。设置仍保存在数据目录的 `connection.json`，旧配置继续有效；含 Token 的文件在 Unix 上以 `0600` 权限创建，不得提交。工具返回不含 Token 的地址，启动日志和连接错误也会脱敏。
 
 开启自动归档后，仅归档成功的新建会话，失败、取消和复用的会话不归档。随后只清理**当前 MCP 进程自己创建**的工作区登记，要求其中所有会话均已归档，且没有运行中会话或本插件活动任务。原有工作区及仍有未归档会话的工作区保留。清理只移除侧栏登记，磁盘目录、文件和会话历史保留；归档或清理失败记录在 `archiveError`，不改变运行的成功状态。
 

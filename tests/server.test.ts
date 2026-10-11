@@ -1,9 +1,10 @@
-import { mkdtemp, mkdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunManager } from "../src/run-manager.js";
 import type { HarnessCommand } from "../src/runtime.js";
@@ -38,7 +39,8 @@ describe("MCP server", () => {
       }),
     });
     server = createMcpServer(manager);
-    client = new Client({ name: "test-client", version: "1.0.0" });
+    client = new Client({ name: "test-client", version: "1.0.0" }, { capabilities: { elicitation: { form: {} } } });
+    client.setRequestHandler(ElicitRequestSchema, async () => ({ action: "accept", content: { mode: "managed", autoArchiveSuccessfulRuns: false } }));
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   });
@@ -68,35 +70,64 @@ describe("MCP server", () => {
     ]);
   });
 
-  it("starts and waits for a local run through MCP", async () => {
-    const firstUse = await client.callTool({
-      name: "start_run",
-      arguments: { task: "MCP task", workspace },
+  it("collects settings through a native MCP form without opening a browser", async () => {
+    const requests: unknown[] = [];
+    client.setRequestHandler(ElicitRequestSchema, async (request) => {
+      requests.push(request.params);
+      return { action: "accept", content: { mode: "managed", autoArchiveSuccessfulRuns: true } };
     });
-    expect(firstUse.structuredContent).toMatchObject({ status: "pending", mode: null });
-    const setupUrl = (firstUse.structuredContent as { setupUrl: string }).setupUrl;
-    expect(openBrowser).toHaveBeenCalledWith(setupUrl);
+    const response = await client.callTool({ name: "open_setup", arguments: {} });
+    expect(response.structuredContent).toMatchObject({ status: "configured", mode: "managed", autoArchiveSuccessfulRuns: true, setupUrl: null });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ mode: "form", requestedSchema: { required: ["mode", "autoArchiveSuccessfulRuns"] } });
+    expect(openBrowser).not.toHaveBeenCalled();
     expect(manager.listServices()).toHaveLength(0);
-    const pageResponse = await fetch(setupUrl);
-    expect(pageResponse.headers.get("referrer-policy")).toBe("same-origin");
-    const page = await pageResponse.text();
-    const nonce = page.match(/<script nonce="([^"]+)">/)?.[1];
-    expect(nonce).toBeDefined();
-    expect(pageResponse.headers.get("content-security-policy")).toContain(`script-src 'nonce-${nonce}'`);
-    expect(pageResponse.headers.get("content-security-policy")).toContain("connect-src 'self'");
-    expect(page).toContain('alert("设置已保存，返回 Codex 继续。")');
-    expect(page).toContain("window.close()");
-    expect(page).toContain("连接已有服务");
-    expect(page).toContain("由插件启动新服务");
-    const choice = await fetch(setupUrl, {
-      method: "POST",
-      headers: { origin: new URL(setupUrl).origin, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ mode: "managed" }),
-    });
-    expect(choice.status).toBe(200);
-    expect((await client.callTool({ name: "wait_setup", arguments: { timeoutMs: 2_000 } })).structuredContent)
-      .toMatchObject({ status: "configured", mode: "managed" });
+  });
 
+  it("leaves settings and services untouched when the native form is cancelled", async () => {
+    client.setRequestHandler(ElicitRequestSchema, async () => ({ action: "cancel" }));
+    const response = await client.callTool({ name: "start_service", arguments: { workspace } });
+    expect(response.isError).not.toBe(true);
+    expect(response.structuredContent).toMatchObject({ status: "required", mode: null });
+    expect(manager.listServices()).toHaveLength(0);
+    expect(openBrowser).not.toHaveBeenCalled();
+    await expect(readFile(join(temporaryRoot, "data", "connection.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("returns an actionable error without opening a page when form elicitation is unsupported", async () => {
+    await client.close();
+    await server.close();
+    server = createMcpServer(manager);
+    client = new Client({ name: "legacy-client", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const response = await client.callTool({ name: "open_setup", arguments: {} });
+    expect(response.isError).toBe(true);
+    expect(response.content).toEqual([expect.objectContaining({ text: expect.stringContaining("does not support setup forms") })]);
+    expect(openBrowser).not.toHaveBeenCalled();
+    expect(manager.listServices()).toHaveLength(0);
+  });
+
+  it("does not save or start when the caller cancels after submitting the form", async () => {
+    let finishAuthentication!: () => void;
+    const authentication = new Promise<Response>((resolve) => { finishAuthentication = () => resolve(new Response(null, { status: 303, headers: { "set-cookie": "auth=fixture-cookie" } })); });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementationOnce(() => authentication).mockResolvedValue(new Response(null, { status: 200 }));
+    const controller = new AbortController();
+    client.setRequestHandler(ElicitRequestSchema, async () => ({ action: "accept", content: { mode: "external", url: "http://localhost:3080/?token=fixture-secret", autoArchiveSuccessfulRuns: false } }));
+    try {
+      const calling = client.callTool({ name: "start_service", arguments: { workspace } }, undefined, { signal: controller.signal });
+      const cancelled = expect(calling).rejects.toThrow();
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      controller.abort();
+      await cancelled;
+      finishAuthentication();
+      await vi.waitFor(async () => expect(await manager.connectionStatus()).toMatchObject({ status: "required" }));
+      expect(manager.listServices()).toHaveLength(0);
+      await expect(readFile(join(temporaryRoot, "data", "connection.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { fetchMock.mockRestore(); }
+  });
+
+  it("starts and waits for a local run through MCP", async () => {
     const start = await client.callTool({
       name: "start_run",
       arguments: { task: "MCP task", workspace },
@@ -133,16 +164,10 @@ describe("MCP server", () => {
       status: "succeeded",
       assistantText: "completed:MCP follow-up",
     });
-    expect(openBrowser).toHaveBeenCalledTimes(1);
+    expect(openBrowser).not.toHaveBeenCalled();
   });
 
   it("returns a tool error for an invalid workspace", async () => {
-    const setup = await manager.ensureConnection();
-    await fetch(setup.setupUrl!, {
-      method: "POST",
-      headers: { origin: new URL(setup.setupUrl!).origin, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ mode: "managed" }),
-    });
     const response = await client.callTool({
       name: "start_run",
       arguments: { task: "task", workspace: "." },
@@ -154,17 +179,20 @@ describe("MCP server", () => {
     ]);
   });
 
-  it("opens one setup page for concurrent first-use calls", async () => {
+  it("opens one MCP form for concurrent first-use calls", async () => {
+    const requests = vi.fn(async () => ({ action: "accept" as const, content: { mode: "managed", autoArchiveSuccessfulRuns: false } }));
+    client.setRequestHandler(ElicitRequestSchema, requests);
     const [first, second] = await Promise.all([
       client.callTool({ name: "start_service", arguments: { workspace } }),
       client.callTool({ name: "start_service", arguments: { workspace } }),
     ]);
-    expect((first.structuredContent as { setupUrl: string }).setupUrl)
-      .toBe((second.structuredContent as { setupUrl: string }).setupUrl);
-    expect(openBrowser).toHaveBeenCalledTimes(1);
+    expect(first.structuredContent).toMatchObject({ status: "running" });
+    expect(second.structuredContent).toMatchObject({ serviceId: (first.structuredContent as { serviceId: string }).serviceId });
+    expect(requests).toHaveBeenCalledTimes(1);
+    expect(openBrowser).not.toHaveBeenCalled();
   });
 
-  it("connects to an existing service through the browser form and keeps its token private", async () => {
+  it("receives a native form URL directly and keeps its token out of requests and tool results", async () => {
     const host = new RunManager({
       dataDirectory: join(temporaryRoot, "host-data"),
       allowedRoots: [temporaryRoot],
@@ -178,34 +206,16 @@ describe("MCP server", () => {
     });
     try {
       const existing = await host.startService({ workspace });
-      const firstUse = await client.callTool({ name: "start_service", arguments: { workspace } });
-      const setupUrl = (firstUse.structuredContent as { setupUrl: string }).setupUrl;
-      expect(firstUse.structuredContent).toMatchObject({ status: "pending" });
-
-      const badOrigin = await fetch(setupUrl, {
-        method: "POST",
-        headers: { origin: "http://evil.invalid", "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ mode: "external", url: existing.webUrl! }),
+      const authUrl = `${new URL(existing.webUrl!).origin}/?token=test-token`;
+      const requests: unknown[] = [];
+      client.setRequestHandler(ElicitRequestSchema, async (request) => {
+        requests.push(request.params);
+        return { action: "accept", content: { mode: "external", url: authUrl, autoArchiveSuccessfulRuns: true } };
       });
-      expect(badOrigin.status).toBe(403);
-
-      const remote = await fetch(setupUrl, {
-        method: "POST",
-        headers: { origin: new URL(setupUrl).origin, "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ mode: "external", url: "https://example.com/?token=not-local" }),
-      });
-      expect(remote.status).toBe(400);
-
-      const saved = await fetch(setupUrl, {
-        method: "POST",
-        headers: { origin: new URL(setupUrl).origin, "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ mode: "external", url: existing.webUrl! }),
-      });
-      expect(saved.status).toBe(200);
-      expect(saved.headers.get("location")).toBeNull();
-      const confirmation = await saved.text();
-      expect(confirmation).toContain("设置完成");
-      expect(confirmation).not.toContain("test-token");
+      const saved = await client.callTool({ name: "open_setup", arguments: {} });
+      expect(saved.structuredContent).toMatchObject({ status: "configured", mode: "external", autoArchiveSuccessfulRuns: true });
+      expect(JSON.stringify([requests, saved])).not.toContain("test-token");
+      expect(JSON.parse(await readFile(join(temporaryRoot, "data", "connection.json"), "utf8"))).toEqual({ mode: "external", url: authUrl, autoArchiveSuccessfulRuns: true });
       const ready = await client.callTool({ name: "wait_setup", arguments: { timeoutMs: 2_000 } });
       expect(ready.structuredContent).toMatchObject({
         status: "configured", mode: "external", externalWebUrl: new URL(existing.webUrl!).origin,
@@ -219,7 +229,7 @@ describe("MCP server", () => {
         status: "running", webUrl: new URL(existing.webUrl!).origin, processId: null,
       });
       await client.callTool({ name: "open_service", arguments: { serviceId: (attached.structuredContent as { serviceId: string }).serviceId } });
-      expect(openBrowser).toHaveBeenLastCalledWith(existing.webUrl);
+      expect(openBrowser).toHaveBeenLastCalledWith(authUrl);
       expect(JSON.stringify(await client.callTool({ name: "list_services", arguments: {} }))).not.toContain("test-token");
       expect(host.listServices()[0]?.status).toBe("running");
       if (process.platform !== "win32") {

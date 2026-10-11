@@ -51,7 +51,7 @@ describe("RunManager Web orchestration", () => {
   let temporaryRoot: string;
   let workspace: string;
   let manager: RunManager;
-  const openBrowser = vi.fn(async () => undefined);
+  const openBrowser = vi.fn(async (_url: string) => undefined);
 
   beforeEach(async () => {
     temporaryRoot = await mkdtemp(join(tmpdir(), "deepseek-harness-mcp-"));
@@ -434,9 +434,14 @@ describe("RunManager Web orchestration", () => {
     });
     try {
       const started = await authenticated.start({ task: "authenticated task", workspace });
+      expect(started.webUrl).toBe(new URL(started.webUrl).origin);
+      expect(JSON.stringify([started, authenticated.listServices()])).not.toContain("test-token");
       expect((await authenticated.wait(started.runId, 2_000)).status).toBe("succeeded");
       await authenticated.openService(started.serviceId);
-      expect(openBrowser).toHaveBeenCalledWith(started.webUrl);
+      expect(openBrowser).toHaveBeenCalledWith(`${started.webUrl}/?token=test-token`);
+      openBrowser.mockImplementationOnce(async (url) => { throw new Error(`browser failed: ${url}`); });
+      await expect(authenticated.openService(started.serviceId)).rejects.toThrow("[redacted]");
+      await expect(authenticated.openService(started.serviceId)).resolves.toMatchObject({ webUrl: started.webUrl });
     } finally {
       await authenticated.close();
     }
@@ -459,7 +464,7 @@ describe("RunManager Web orchestration", () => {
     const attached = new RunManager({
       dataDirectory: join(temporaryRoot, "attached-data"),
       allowedRoots: [temporaryRoot],
-      externalWebUrl: host.webUrl!,
+      externalWebUrl: `${new URL(host.webUrl!).origin}/?token=test-token`,
       pollIntervalMs: 10,
       spawnProcess,
     });

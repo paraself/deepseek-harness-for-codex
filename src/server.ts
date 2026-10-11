@@ -1,7 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { RequestId } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { inspectRuntime } from "./runtime.js";
 import { RunManager } from "./run-manager.js";
+import type { SetupInputHandler } from "./setup.js";
 
 const runIdSchema = z.string().uuid().describe("Run identifier returned by start_run.");
 const serviceIdSchema = z.string().uuid().describe("Service identifier returned by start_service or start_run.");
@@ -28,24 +30,32 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
     { name: "deepseek-harness-for-codex", version: "0.4.1" },
     {
       instructions:
-        "On first use, start_service or start_run opens a local setup page. Wait for the user to choose an existing or managed Harness Web service, then retry the tool. Do not open the Harness session page unless the user explicitly requests it.",
+        "On first use, start_service or start_run asks for settings through an MCP form. The plugin receives and saves the authentication URL directly; never ask for it through chat or tool arguments. If the user cancels, leave settings unchanged. Do not open the Harness session page unless the user explicitly requests it.",
     },
   );
+
+  const setupInput = (requestId: RequestId, toolSignal: AbortSignal): SetupInputHandler => async (request, signal) => {
+    if (!server.server.getClientCapabilities()?.elicitation?.form) throw new Error("This MCP client does not support setup forms. Update Codex or configure DSH_MCP_WEB_URL locally.");
+    try {
+      return await server.server.elicitInput(request, { relatedRequestId: requestId, signal: AbortSignal.any([signal, toolSignal]), timeout: 600_000 });
+    } catch { throw new Error("The setup form was interrupted or timed out. Call open_setup to try again."); }
+  };
 
   server.registerTool(
     "start_service",
     {
       title: "Start the local DeepSeek Harness Web UI",
-      description: "On first use, open the local connection setup page. Once configured, start or reuse Harness Web for an absolute workspace.",
+      description: "On first use, collect connection settings through the client's MCP form. Once configured, start or reuse Harness Web for an absolute workspace.",
       inputSchema: {
         workspace: z.string().min(1).describe("Absolute repository path served by DeepSeek Harness."),
         openBrowser: z.boolean().default(false).describe("Open the Harness page after readiness. Keep false unless the user explicitly requested it."),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async (input) => {
+    async (input, extra) => {
       try {
-        const setup = await manager.ensureConnection();
+        const setup = await manager.ensureConnection(setupInput(extra.requestId, extra.signal), extra.signal);
+        if (extra.signal.aborted) throw new Error("The setup request was cancelled.");
         return result(setup.status === "configured" ? await manager.startService(input) : setup);
       } catch (error) { return failure(error); }
     },
@@ -55,12 +65,12 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
     "open_setup",
     {
       title: "Open DeepSeek Harness connection settings",
-      description: "Open the local browser page to change between an existing DSH Web service and a plugin-managed service.",
+      description: "Open the client's MCP form to change the saved DSH connection and auto-archive setting. Authentication input goes directly to the plugin, not through tool arguments.",
       inputSchema: {},
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async () => {
-      try { return result(await manager.openSetup()); } catch (error) { return failure(error); }
+    async (_input, extra) => {
+      try { return result(await manager.openSetup(setupInput(extra.requestId, extra.signal), extra.signal)); } catch (error) { return failure(error); }
     },
   );
 
@@ -68,7 +78,7 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
     "wait_setup",
     {
       title: "Wait for DeepSeek Harness connection setup",
-      description: "Wait up to 30 seconds for the local setup page to save a connection choice. Returns no credentials.",
+      description: "Wait up to 30 seconds for an open MCP setup form to finish. Returns no credentials.",
       inputSchema: { timeoutMs: z.number().int().min(0).max(30_000).default(30_000) },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -135,7 +145,7 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
     "start_run",
     {
       title: "Start a local DeepSeek Harness run",
-      description: "On first use, open the local connection setup page. Once configured, create or continue a visible Harness session and return its runId and webUrl.",
+      description: "On first use, collect connection settings through the client's MCP form. Once configured, create or continue a visible Harness session and return its runId and webUrl.",
       inputSchema: {
         task: z.string().min(1).max(100_000).describe("Complete implementation task, constraints, and acceptance checks for DeepSeek Harness."),
         workspace: z.string().min(1).describe("Absolute path of the repository DeepSeek Harness may inspect and modify."),
@@ -144,9 +154,10 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    async (input) => {
+    async (input, extra) => {
       try {
-        const setup = await manager.ensureConnection();
+        const setup = await manager.ensureConnection(setupInput(extra.requestId, extra.signal), extra.signal);
+        if (extra.signal.aborted) throw new Error("The setup request was cancelled.");
         return result(setup.status === "configured" ? await manager.start(input) : setup);
       } catch (error) {
         return failure(error);
