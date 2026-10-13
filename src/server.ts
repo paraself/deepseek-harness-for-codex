@@ -27,7 +27,7 @@ function failure(error: unknown) {
 /** Creates the MCP tool surface over a local run manager. */
 export function createMcpServer(manager: RunManager = new RunManager()): McpServer {
   const server = new McpServer(
-    { name: "deepseek-harness-for-codex", version: "0.4.1" },
+    { name: "deepseek-harness-for-codex", version: "0.4.2" },
     {
       instructions:
         "On first use, start_service or start_run asks for settings through an MCP form. The plugin receives and saves the authentication URL directly; never ask for it through chat or tool arguments. If the user cancels, leave settings unchanged. Do not open the Harness session page unless the user explicitly requests it.",

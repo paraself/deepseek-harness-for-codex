@@ -23,7 +23,7 @@ export class ConnectionSetup {
   private readonly configPath: string;
   private readonly environmentUrl: string | undefined;
   private choice: ConnectionChoice | null | undefined;
-  private opening: Promise<void> | null = null;
+  private opening: Promise<ElicitResult["action"]> | null = null;
   private controller: AbortController | null = null;
 
   public constructor(
@@ -81,11 +81,14 @@ export class ConnectionSetup {
       const signal = toolSignal === undefined ? controller.signal : AbortSignal.any([controller.signal, toolSignal]);
       this.opening = this.collect(requestInput, signal).finally(() => { this.opening = null; this.controller = null; });
     }
-    await this.opening;
+    const action = await this.opening;
+    // 已有配置仅表示曾经保存过，不能把本次表单被拒绝或取消当作设置成功。
+    if (action === "decline") throw new Error("The MCP client declined the setup form. Settings were not changed. Check that Codex can display MCP forms, then call open_setup again.");
+    if (force && action === "cancel") throw new Error("The setup form was cancelled. Settings were not changed. Call open_setup to try again.");
     return this.state();
   }
 
-  private async collect(requestInput: SetupInputHandler, signal: AbortSignal): Promise<void> {
+  private async collect(requestInput: SetupInputHandler, signal: AbortSignal): Promise<ElicitResult["action"]> {
     let message = "设置 DeepSeek Harness：选择连接方式。复用已有服务时填写启动时输出的完整本机认证 URL；由插件启动时留空。";
     while (!signal.aborted) {
       const current = await this.getChoice();
@@ -101,7 +104,8 @@ export class ConnectionSetup {
           required: ["mode", "autoArchiveSuccessfulRuns"],
         },
       }, signal);
-      if (signal.aborted || response.action !== "accept") return;
+      if (signal.aborted) return "cancel";
+      if (response.action !== "accept") return response.action;
       let choice: ConnectionChoice;
       try {
         const content = response.content;
@@ -121,11 +125,12 @@ export class ConnectionSetup {
         message = "设置未保存。请检查完整的本机认证 URL 和 DSH 服务状态后重试，或取消。";
         continue;
       }
-      if (signal.aborted) return;
+      if (signal.aborted) return "cancel";
       try { await this.save(choice); } catch { throw new Error("Could not save DeepSeek Harness settings locally."); }
       this.choice = this.environmentAutoArchiveSuccessfulRuns === undefined ? choice : { ...choice, autoArchiveSuccessfulRuns: this.environmentAutoArchiveSuccessfulRuns };
-      return;
+      return "accept";
     }
+    return "cancel";
   }
 
   public async wait(timeoutMs: number): Promise<SetupSnapshot> {

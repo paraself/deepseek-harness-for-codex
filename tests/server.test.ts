@@ -94,6 +94,29 @@ describe("MCP server", () => {
     await expect(readFile(join(temporaryRoot, "data", "connection.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it.each(["cancel", "decline"] as const)("returns a tool error when reconfiguration is %s and preserves the saved settings", async (action) => {
+    await client.callTool({ name: "open_setup", arguments: {} });
+    const configPath = join(temporaryRoot, "data", "connection.json");
+    const saved = await readFile(configPath, "utf8");
+    client.setRequestHandler(ElicitRequestSchema, async () => ({ action }));
+    const response = await client.callTool({ name: "open_setup", arguments: {} });
+    expect(response.isError).toBe(true);
+    expect(response.structuredContent).toBeUndefined();
+    expect(response.content).toEqual([expect.objectContaining({ text: expect.stringContaining(action === "decline" ? "declined" : "cancelled") })]);
+    expect(await readFile(configPath, "utf8")).toBe(saved);
+    expect(manager.listServices()).toHaveLength(0);
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("reports a declined form instead of silently continuing a first-use call", async () => {
+    client.setRequestHandler(ElicitRequestSchema, async () => ({ action: "decline" }));
+    const response = await client.callTool({ name: "start_service", arguments: { workspace } });
+    expect(response.isError).toBe(true);
+    expect(response.content).toEqual([expect.objectContaining({ text: expect.stringContaining("declined") })]);
+    expect(manager.listServices()).toHaveLength(0);
+    await expect(readFile(join(temporaryRoot, "data", "connection.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("returns an actionable error without opening a page when form elicitation is unsupported", async () => {
     await client.close();
     await server.close();

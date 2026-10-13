@@ -49,6 +49,8 @@ The first `start_run` or `start_service` requests an MCP setup form inside Codex
 
 The form also offers automatic archiving of successful new sessions and cleanup of empty workspaces created by the plugin. Choices are saved locally; ask Codex to call `open_setup` to change the connection or authentication URL. The URL is never prefilled or echoed in errors or tool results. MCP form input returns directly to the plugin rather than becoming a model question response. The Codex client still handles the input and may record local logs.
 
+If the client declines the form or reconfiguration is cancelled, `open_setup` returns an explicit error and preserves the previous settings. A saved connection's configured status does not mean the new setup succeeded.
+
 The client must support MCP form elicitation. Otherwise, the plugin asks you to update the client or configure `DSH_MCP_WEB_URL` locally; it does not fall back to a webpage.
 
 ## Daily use
