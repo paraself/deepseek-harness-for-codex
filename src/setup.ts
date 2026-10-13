@@ -8,6 +8,11 @@ export type ConnectionChoice =
   | { mode: "managed"; autoArchiveSuccessfulRuns: boolean }
   | { mode: "external"; url: string; autoArchiveSuccessfulRuns: boolean };
 export type SetupInputHandler = (request: ElicitRequestFormParams, signal: AbortSignal) => Promise<ElicitResult>;
+export interface ConnectionSettingsUpdate {
+  mode?: ConnectionChoice["mode"];
+  url?: string;
+  autoArchiveSuccessfulRuns?: boolean;
+}
 
 export interface SetupSnapshot {
   status: "required" | "pending" | "configured";
@@ -22,7 +27,6 @@ export interface SetupSnapshot {
 export class ConnectionSetup {
   private readonly configPath: string;
   private readonly environmentUrl: string | undefined;
-  private choice: ConnectionChoice | null | undefined;
   private opening: Promise<ElicitResult["action"]> | null = null;
   private controller: AbortController | null = null;
 
@@ -37,22 +41,27 @@ export class ConnectionSetup {
 
   public async getChoice(): Promise<ConnectionChoice | null> {
     if (this.environmentUrl !== undefined) return { mode: "external", url: this.environmentUrl, autoArchiveSuccessfulRuns: this.environmentAutoArchiveSuccessfulRuns ?? false };
-    if (this.choice !== undefined) return this.choice;
+    const stored = await this.readStoredChoice();
+    return stored === null ? null : { ...stored, autoArchiveSuccessfulRuns: this.environmentAutoArchiveSuccessfulRuns ?? stored.autoArchiveSuccessfulRuns };
+  }
+
+  private async readStoredChoice(): Promise<ConnectionChoice | null> {
+    // 原生设置页可能使用独立 MCP 进程；每次读取磁盘，避免当前聊天继续使用旧认证地址。
     try {
       const stored: unknown = JSON.parse(await readFile(this.configPath, "utf8"));
       if (typeof stored === "object" && stored !== null) {
         const value = stored as Record<string, unknown>;
-        const autoArchiveSuccessfulRuns = this.environmentAutoArchiveSuccessfulRuns ?? value.autoArchiveSuccessfulRuns === true;
-        if (value.mode === "managed") return this.choice = { mode: "managed", autoArchiveSuccessfulRuns };
+        const autoArchiveSuccessfulRuns = value.autoArchiveSuccessfulRuns === true;
+        if (value.mode === "managed") return { mode: "managed", autoArchiveSuccessfulRuns };
         if (value.mode === "external" && typeof value.url === "string") {
           resolveExternalWebService({ DSH_MCP_WEB_URL: value.url });
-          return this.choice = { mode: "external", url: value.url, autoArchiveSuccessfulRuns };
+          return { mode: "external", url: value.url, autoArchiveSuccessfulRuns };
         }
       }
     } catch {
       // 旧配置不可用时重新询问，不启动未经用户选择的服务。
     }
-    return this.choice = null;
+    return null;
   }
 
   public async state(): Promise<SetupSnapshot> {
@@ -83,8 +92,49 @@ export class ConnectionSetup {
     }
     const action = await this.opening;
     // 已有配置仅表示曾经保存过，不能把本次表单被拒绝或取消当作设置成功。
-    if (action === "decline") throw new Error("The MCP client declined the setup form. Settings were not changed. Check that Codex can display MCP forms, then call open_setup again.");
+    if (action === "decline") throw new Error("The MCP client declined the setup form before it was completed. Settings were not changed. Use the native settings in the DeepSeek Harness plugin details page; no permission change is needed.");
     if (force && action === "cancel") throw new Error("The setup form was cancelled. Settings were not changed. Call open_setup to try again.");
+    return this.state();
+  }
+
+  /** 更新原生面板提交的字段；新认证地址验证成功后才替换已有设置，返回值不含 token。 */
+  public async updateSettings(changes: ConnectionSettingsUpdate, signal?: AbortSignal): Promise<SetupSnapshot> {
+    if (this.environmentUrl !== undefined) throw new Error("Remove DSH_MCP_WEB_URL from the MCP environment before changing this setting.");
+    if (changes.autoArchiveSuccessfulRuns !== undefined && this.environmentAutoArchiveSuccessfulRuns !== undefined) {
+      throw new Error("Remove DSH_MCP_AUTO_ARCHIVE from the MCP environment before changing this setting.");
+    }
+    if (this.opening !== null) throw new Error("Finish the open setup form before changing settings.");
+    if (signal?.aborted) throw new Error("The settings update was cancelled.");
+
+    const current = await this.readStoredChoice();
+    const url = changes.url?.trim();
+    if (!url && changes.mode === undefined && changes.autoArchiveSuccessfulRuns === undefined) return this.state();
+    // 输入新认证地址就是连接已有服务；空输入仅表示不替换，不会清除旧凭据。
+    const mode = changes.mode ?? (url ? "external" : current?.mode ?? "external");
+    // 环境覆盖只影响生效值，不能因修改连接而写回磁盘。
+    const autoArchiveSuccessfulRuns = changes.autoArchiveSuccessfulRuns ?? current?.autoArchiveSuccessfulRuns ?? false;
+    let choice: ConnectionChoice;
+    if (mode === "managed") {
+      if (url) throw new Error("选择已有 DSH 服务后再填写认证地址。");
+      choice = { mode, autoArchiveSuccessfulRuns };
+    } else {
+      const authenticationUrl = url || (current?.mode === "external" ? current.url : undefined);
+      if (authenticationUrl === undefined) throw new Error("请先填写当前 DSH 服务的完整认证 URL，或选择由插件启动。");
+      if (url) {
+        try {
+          if (url.length > 4096) throw new Error("URL too long.");
+          const external = resolveExternalWebService({ DSH_MCP_WEB_URL: url });
+          if (external?.authenticationUrl == null) throw new Error("Authentication URL required.");
+          await authenticateExternalWebService(external, signal);
+        } catch {
+          if (signal?.aborted) throw new Error("The settings update was cancelled.");
+          throw new Error("认证失败，设置未保存。请填写本次 dsh web 启动时输出的完整本机认证 URL。");
+        }
+      }
+      choice = { mode, url: authenticationUrl, autoArchiveSuccessfulRuns };
+    }
+    if (signal?.aborted) throw new Error("The settings update was cancelled.");
+    try { await this.save(choice); } catch { throw new Error("Could not save DeepSeek Harness settings locally."); }
     return this.state();
   }
 
@@ -127,7 +177,6 @@ export class ConnectionSetup {
       }
       if (signal.aborted) return "cancel";
       try { await this.save(choice); } catch { throw new Error("Could not save DeepSeek Harness settings locally."); }
-      this.choice = this.environmentAutoArchiveSuccessfulRuns === undefined ? choice : { ...choice, autoArchiveSuccessfulRuns: this.environmentAutoArchiveSuccessfulRuns };
       return "accept";
     }
     return "cancel";
