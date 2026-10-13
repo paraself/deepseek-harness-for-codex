@@ -40,16 +40,18 @@ Alternatively, pass `DEEPSEEK_API_KEY` to the environment that starts Codex, or 
 
 ## First-use setup
 
-The first `start_run` or `start_service` requests an MCP setup form inside Codex. After submission, the plugin validates and saves the settings, then continues the original call without opening a setup webpage. Cancelling saves nothing and starts no service; existing settings remain.
+Open the native connection settings in the DeepSeek Harness plugin details page in Codex. The panel calls the plugin directly and works in Full Access without a chat elicitation. Other clients that allow MCP forms can still configure their first `start_run` or `start_service` through a form; cancelling saves nothing and starts no service.
 
 | Connection | Action and behavior |
 | --- | --- |
-| Existing DSH Web | Paste the full startup authentication URL (including `?token=...`) into the form, never into chat. The plugin validates the loopback URL and tests authentication; invalid input prompts another form. |
+| Existing DSH Web | Paste the full authentication URL from the current DSH startup (including `?token=...`) into the native settings, never into chat. Enter or blur validates and saves it; failure preserves the previous settings. Entering a URL switches to the existing service. |
 | Plugin-managed service | The plugin runs `dsh web --port 0`; the first run may download the Harness npm package. The MCP server itself is already bundled. |
 
-The form also offers automatic archiving of successful new sessions and cleanup of empty workspaces created by the plugin. Choices are saved locally; ask Codex to call `open_setup` to change the connection or authentication URL. The URL is never prefilled or echoed in errors or tool results. MCP form input returns directly to the plugin rather than becoming a model question response. The Codex client still handles the input and may record local logs.
+The panel also offers automatic archiving of successful new sessions and cleanup of empty workspaces created by the plugin. Choices are saved locally. The chat reads the latest configuration even when the settings page uses another plugin process. `open_setup` explains the native entry; it does not open a window or indicate a successful update.
 
-The client must support MCP form elicitation. Otherwise, the plugin asks you to update the client or configure `DSH_MCP_WEB_URL` locally; it does not fall back to a webpage.
+The authentication URL input is blank on every read; leaving it blank does not remove the saved credential. Input goes directly from the native UI to the plugin. Settings tools are app-only and hidden from the model; their results and errors never echo the token. The input is an ordinary text control. The Codex client still handles the input and may record local logs.
+
+A chat form may be automatically declined by the client before it appears; that does not mean the user declined it. Use native plugin settings without changing the permission policy.
 
 ## Daily use
 
@@ -71,12 +73,13 @@ codex plugin add deepseek-harness@deepseek-harness-for-codex
 Restart Codex after updating to load the new code. The following reference sections cover configuration, migration, and development.
 
 <details>
-<summary>MCP tools (12)</summary>
+<summary>MCP tools (12 model tools and 2 native settings tools)</summary>
 
 | Tool | Purpose |
 | --- | --- |
 | `doctor` | Check Node, npx, package selection, credential visibility, data location, and workspace restrictions without downloads. |
-| `open_setup` | Open the native Codex MCP form to change the connection and archive switch. |
+| `open_setup` | Explain the native settings entry in the plugin details page; does not open a window. |
+| `settings_read` / `settings_update` | App-only native UI tools for redacted settings and partial updates; hidden from the model. |
 | `wait_setup` | Wait up to 30 seconds for an already open setup form to finish. |
 | `start_service` | Start or reuse Web for a workspace and return its URL; does not open the browser by default. |
 | `open_service` | Open a running Harness page when the user explicitly requests it. |

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { inspectRuntime } from "./runtime.js";
 import { RunManager } from "./run-manager.js";
 import type { SetupInputHandler } from "./setup.js";
+import { connectionModes, settingsDefinition, settingsReadSchema, settingsUpdateSchema, settingsValues, settingsValuesSchema } from "./native-settings.js";
 
 const runIdSchema = z.string().uuid().describe("Run identifier returned by start_run.");
 const serviceIdSchema = z.string().uuid().describe("Service identifier returned by start_service or start_run.");
@@ -27,10 +28,11 @@ function failure(error: unknown) {
 /** Creates the MCP tool surface over a local run manager. */
 export function createMcpServer(manager: RunManager = new RunManager()): McpServer {
   const server = new McpServer(
-    { name: "deepseek-harness-for-codex", version: "0.4.1" },
+    { name: "deepseek-harness-for-codex", version: "0.4.3" },
     {
+      capabilities: { experimental: { "openai/settings": { readTool: "settings_read", updateTool: "settings_update" } } },
       instructions:
-        "On first use, start_service or start_run asks for settings through an MCP form. The plugin receives and saves the authentication URL directly; never ask for it through chat or tool arguments. If the user cancels, leave settings unchanged. Do not open the Harness session page unless the user explicitly requests it.",
+        "Configure the connection in the native settings on the DeepSeek Harness plugin details page. Authentication input goes directly from that UI to the plugin; never request or pass it through chat or model tool arguments. open_setup explains the native entry. First-use MCP forms remain available for other clients. Do not open the Harness session page unless explicitly requested.",
     },
   );
 
@@ -64,15 +66,40 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
   server.registerTool(
     "open_setup",
     {
-      title: "Open DeepSeek Harness connection settings",
-      description: "Open the client's MCP form to change the saved DSH connection and auto-archive setting. Authentication input goes directly to the plugin, not through tool arguments.",
+      title: "Find the native DeepSeek Harness connection settings",
+      description: "Show how to open the native settings on the DeepSeek Harness plugin details page. Does not request an elicitation or change permissions.",
       inputSchema: {},
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (_input, extra) => {
-      try { return result(await manager.openSetup(setupInput(extra.requestId, extra.signal), extra.signal)); } catch (error) { return failure(error); }
-    },
+    async () => result({ settingsSurface: "plugin-details", message: "在 Codex 中打开 DeepSeek Harness 插件详情，进入原生连接设置。填写认证 URL 后按 Enter 或移开焦点，验证成功才保存；无需切换权限模式。此工具仅提供入口说明，不代表已打开窗口或保存设置。" }),
   );
+
+  server.registerTool("settings_read", {
+    title: "Read DeepSeek Harness native settings",
+    description: "Read the native plugin settings schema and redacted values.",
+    inputSchema: {}, outputSchema: settingsReadSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _meta: { ui: { visibility: ["app"] } },
+  }, async () => {
+    try { return result(settingsDefinition(await manager.connectionStatus())); } catch (error) { return failure(error); }
+  });
+
+  server.registerTool("settings_update", {
+    title: "Update DeepSeek Harness native settings",
+    description: "Receive changed settings directly from the native plugin UI. Never call this tool from the model with an authentication URL.",
+    inputSchema: { set: settingsUpdateSchema }, outputSchema: { values: settingsValuesSchema },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _meta: { ui: { visibility: ["app"] } },
+  }, async ({ set }, extra) => {
+    try {
+      const snapshot = await manager.updateConnectionSettings({
+        ...(set.url === undefined ? {} : { url: set.url }),
+        ...(set.autoArchiveSuccessfulRuns === undefined ? {} : { autoArchiveSuccessfulRuns: set.autoArchiveSuccessfulRuns }),
+        ...(set.mode === undefined ? {} : { mode: set.mode === connectionModes[1] ? "managed" as const : "external" as const }),
+      }, extra.signal);
+      return result({ values: settingsValues(snapshot) });
+    } catch (error) { return failure(error); }
+  });
 
   server.registerTool(
     "wait_setup",

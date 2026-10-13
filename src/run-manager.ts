@@ -12,7 +12,7 @@ import {
   type ExternalWebService,
   type HarnessCommand,
 } from "./runtime.js";
-import { ConnectionSetup, type SetupInputHandler, type SetupSnapshot } from "./setup.js";
+import { ConnectionSetup, type ConnectionSettingsUpdate, type SetupInputHandler, type SetupSnapshot } from "./setup.js";
 import type { RunSnapshot, RunStatus, ServiceSnapshot, ServiceStatus, StartRunInput, StartServiceInput } from "./types.js";
 
 const READY_PATTERN = /dsh web: (http:\/\/[^\s]+)/;
@@ -192,6 +192,12 @@ export class RunManager {
 
   public async connectionStatus(): Promise<SetupSnapshot> {
     return this.connectionSetup.state();
+  }
+
+  /** 原生设置面板直接更新连接；当前进程有活动运行时禁止切换。 */
+  public async updateConnectionSettings(changes: ConnectionSettingsUpdate, signal?: AbortSignal): Promise<SetupSnapshot> {
+    if (this.activeSessions.size > 0) throw new Error("Finish active Harness runs before changing the connection.");
+    return this.connectionSetup.updateSettings(changes, signal);
   }
 
   public async configuredExternalUrl(): Promise<string | undefined> {

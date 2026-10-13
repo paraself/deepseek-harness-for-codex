@@ -35,18 +35,21 @@ describe("connection setup", () => {
   });
 
   it.each(["cancel", "decline"] as const)("does not save or configure when the form returns %s", async (action) => {
-    expect(await setup.open(false, async () => ({ action }))).toMatchObject({ status: "required", mode: null });
+    const opening = setup.open(false, async () => ({ action }));
+    if (action === "decline") await expect(opening).rejects.toThrow("declined");
+    else expect(await opening).toMatchObject({ status: "required", mode: null });
     await expect(readFile(join(dataDirectory, "connection.json"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await setup.open(false, managed)).toMatchObject({ status: "configured" });
   });
 
-  it("keeps the previous connection when reconfiguration is cancelled", async () => {
+  it.each(["cancel", "decline"] as const)("reports %s instead of claiming reconfiguration succeeded", async (action) => {
     await writeFile(join(dataDirectory, "connection.json"), JSON.stringify({ mode: "external", url: "http://localhost:3080/?token=fixture-secret" }));
     const requests: unknown[] = [];
-    const response = await setup.open(true, async (request) => { requests.push(request); return { action: "cancel" }; });
-    expect(response).toMatchObject({ status: "configured", mode: "external", externalWebUrl: "http://localhost:3080", autoArchiveSuccessfulRuns: false });
-    expect(JSON.stringify([requests, response])).not.toContain("fixture-secret");
+    await expect(setup.open(true, async (request) => { requests.push(request); return { action }; })).rejects.toThrow(action === "decline" ? "declined" : "cancelled");
+    expect(await setup.state()).toMatchObject({ status: "configured", mode: "external", externalWebUrl: "http://localhost:3080", autoArchiveSuccessfulRuns: false });
+    expect(JSON.stringify(requests)).not.toContain("fixture-secret");
     expect(await readFile(join(dataDirectory, "connection.json"), "utf8")).toContain("fixture-secret");
+    expect(await setup.open(true, managed)).toMatchObject({ status: "configured", mode: "managed" });
   });
 
   it.each([

@@ -18,7 +18,7 @@ export interface HarnessWebCommandInput {
   serviceHome: string;
 }
 
-/** Existing Harness Web endpoint and its optional one-time browser authentication URL. */
+/** Existing Harness Web endpoint and its optional authentication URL for the current service process. */
 export interface ExternalWebService {
   webUrl: string;
   authenticationUrl: string | null;

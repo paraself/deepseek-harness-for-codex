@@ -62,6 +62,8 @@ describe("MCP server", () => {
       "list_services",
       "open_service",
       "open_setup",
+      "settings_read",
+      "settings_update",
       "start_run",
       "start_service",
       "stop_service",
@@ -70,18 +72,33 @@ describe("MCP server", () => {
     ]);
   });
 
-  it("collects settings through a native MCP form without opening a browser", async () => {
+  it("still supports a first-use MCP form for clients that allow it", async () => {
     const requests: unknown[] = [];
     client.setRequestHandler(ElicitRequestSchema, async (request) => {
       requests.push(request.params);
       return { action: "accept", content: { mode: "managed", autoArchiveSuccessfulRuns: true } };
     });
-    const response = await client.callTool({ name: "open_setup", arguments: {} });
-    expect(response.structuredContent).toMatchObject({ status: "configured", mode: "managed", autoArchiveSuccessfulRuns: true, setupUrl: null });
+    const response = await client.callTool({ name: "start_service", arguments: { workspace } });
+    expect(response.structuredContent).toMatchObject({ status: "running" });
+    expect(await manager.connectionStatus()).toMatchObject({ status: "configured", mode: "managed", autoArchiveSuccessfulRuns: true });
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ mode: "form", requestedSchema: { required: ["mode", "autoArchiveSuccessfulRuns"] } });
     expect(openBrowser).not.toHaveBeenCalled();
-    expect(manager.listServices()).toHaveLength(0);
+    expect(manager.listServices()).toHaveLength(1);
+  });
+
+  it("advertises app-only native settings with a valid schema and no saved token", async () => {
+    expect(client.getServerCapabilities()?.experimental?.["openai/settings"]).toEqual({ readTool: "settings_read", updateTool: "settings_update" });
+    const tools = (await client.listTools()).tools.filter((tool) => tool.name.startsWith("settings_"));
+    expect(tools).toHaveLength(2);
+    for (const tool of tools) expect(tool._meta).toMatchObject({ ui: { visibility: ["app"] } });
+    expect(tools.find((tool) => tool.name === "settings_read")?.outputSchema?.required).toEqual(expect.arrayContaining(["schema", "values"]));
+    const read = await client.callTool({ name: "settings_read", arguments: {} });
+    expect(read.structuredContent).toMatchObject({
+      schema: { type: "object", properties: { mode: { type: "string", enum: ["复用已有 DSH", "由插件启动"] }, url: { type: "string" }, autoArchiveSuccessfulRuns: { type: "boolean" } } },
+      values: { mode: "复用已有 DSH", url: "", autoArchiveSuccessfulRuns: false },
+    });
+    await expect(readFile(join(temporaryRoot, "data", "connection.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("leaves settings and services untouched when the native form is cancelled", async () => {
@@ -94,6 +111,31 @@ describe("MCP server", () => {
     await expect(readFile(join(temporaryRoot, "data", "connection.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("shows the native settings entry without claiming a window opened or requesting an elicitation", async () => {
+    await client.callTool({ name: "settings_update", arguments: { set: { mode: "由插件启动" } } });
+    const configPath = join(temporaryRoot, "data", "connection.json");
+    const saved = await readFile(configPath, "utf8");
+    const input = vi.fn(async () => ({ action: "decline" as const }));
+    client.setRequestHandler(ElicitRequestSchema, input);
+    const response = await client.callTool({ name: "open_setup", arguments: {} });
+    expect(response.isError).not.toBe(true);
+    expect(response.structuredContent).toMatchObject({ settingsSurface: "plugin-details", message: expect.stringContaining("插件详情") });
+    expect(response.structuredContent).not.toHaveProperty("status");
+    expect(input).not.toHaveBeenCalled();
+    expect(await readFile(configPath, "utf8")).toBe(saved);
+    expect(manager.listServices()).toHaveLength(0);
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("reports a declined form instead of silently continuing a first-use call", async () => {
+    client.setRequestHandler(ElicitRequestSchema, async () => ({ action: "decline" }));
+    const response = await client.callTool({ name: "start_service", arguments: { workspace } });
+    expect(response.isError).toBe(true);
+    expect(response.content).toEqual([expect.objectContaining({ text: expect.stringContaining("declined") })]);
+    expect(manager.listServices()).toHaveLength(0);
+    await expect(readFile(join(temporaryRoot, "data", "connection.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("returns an actionable error without opening a page when form elicitation is unsupported", async () => {
     await client.close();
     await server.close();
@@ -101,7 +143,7 @@ describe("MCP server", () => {
     client = new Client({ name: "legacy-client", version: "1" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    const response = await client.callTool({ name: "open_setup", arguments: {} });
+    const response = await client.callTool({ name: "start_service", arguments: { workspace } });
     expect(response.isError).toBe(true);
     expect(response.content).toEqual([expect.objectContaining({ text: expect.stringContaining("does not support setup forms") })]);
     expect(openBrowser).not.toHaveBeenCalled();
@@ -125,6 +167,18 @@ describe("MCP server", () => {
       expect(manager.listServices()).toHaveLength(0);
       await expect(readFile(join(temporaryRoot, "data", "connection.json"))).rejects.toMatchObject({ code: "ENOENT" });
     } finally { fetchMock.mockRestore(); }
+  });
+
+  it("preserves connection settings when an update is submitted during an active run", async () => {
+    await client.callTool({ name: "settings_update", arguments: { set: { mode: "由插件启动" } } });
+    const configPath = join(temporaryRoot, "data", "connection.json");
+    const saved = await readFile(configPath, "utf8");
+    const started = await client.callTool({ name: "start_run", arguments: { task: "long task", workspace } });
+    expect(started.isError).not.toBe(true);
+    const updated = await client.callTool({ name: "settings_update", arguments: { set: { autoArchiveSuccessfulRuns: true } } });
+    expect(updated.isError).toBe(true);
+    expect(updated.content).toEqual([expect.objectContaining({ text: expect.stringContaining("active Harness runs") })]);
+    expect(await readFile(configPath, "utf8")).toBe(saved);
   });
 
   it("starts and waits for a local run through MCP", async () => {
@@ -192,7 +246,7 @@ describe("MCP server", () => {
     expect(openBrowser).not.toHaveBeenCalled();
   });
 
-  it("receives a native form URL directly and keeps its token out of requests and tool results", async () => {
+  it("receives a settings URL directly without an elicitation and keeps its token out of tool results", async () => {
     const host = new RunManager({
       dataDirectory: join(temporaryRoot, "host-data"),
       allowedRoots: [temporaryRoot],
@@ -212,9 +266,11 @@ describe("MCP server", () => {
         requests.push(request.params);
         return { action: "accept", content: { mode: "external", url: authUrl, autoArchiveSuccessfulRuns: true } };
       });
-      const saved = await client.callTool({ name: "open_setup", arguments: {} });
-      expect(saved.structuredContent).toMatchObject({ status: "configured", mode: "external", autoArchiveSuccessfulRuns: true });
+      const saved = await client.callTool({ name: "settings_update", arguments: { set: { url: authUrl, autoArchiveSuccessfulRuns: true } } });
+      expect(saved.structuredContent).toMatchObject({ values: { mode: "复用已有 DSH", url: "", autoArchiveSuccessfulRuns: true } });
+      expect(requests).toHaveLength(0);
       expect(JSON.stringify([requests, saved])).not.toContain("test-token");
+      expect(JSON.stringify(await client.callTool({ name: "settings_read", arguments: {} }))).not.toContain("test-token");
       expect(JSON.parse(await readFile(join(temporaryRoot, "data", "connection.json"), "utf8"))).toEqual({ mode: "external", url: authUrl, autoArchiveSuccessfulRuns: true });
       const ready = await client.callTool({ name: "wait_setup", arguments: { timeoutMs: 2_000 } });
       expect(ready.structuredContent).toMatchObject({
@@ -241,5 +297,17 @@ describe("MCP server", () => {
     } finally {
       await host.close();
     }
+  });
+
+  it("rejects invalid native updates without changing settings or starting a service", async () => {
+    const saved = await client.callTool({ name: "settings_update", arguments: { set: { mode: "由插件启动" } } });
+    expect(saved.isError).not.toBe(true);
+    const configPath = join(temporaryRoot, "data", "connection.json");
+    const previous = await readFile(configPath, "utf8");
+    const response = await client.callTool({ name: "settings_update", arguments: { set: { url: "https://example.com/?token=fixture-secret" } } });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response)).not.toContain("fixture-secret");
+    expect(await readFile(configPath, "utf8")).toBe(previous);
+    expect(manager.listServices()).toHaveLength(0);
   });
 });
