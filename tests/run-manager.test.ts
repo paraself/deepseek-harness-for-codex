@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -54,7 +54,8 @@ describe("RunManager Web orchestration", () => {
   const openBrowser = vi.fn(async (_url: string) => undefined);
 
   beforeEach(async () => {
-    temporaryRoot = await mkdtemp(join(tmpdir(), "deepseek-harness-mcp-"));
+    // 与插件统一为真实路径，避免 macOS 的 /var 别名产生两个工作区注册。
+    temporaryRoot = await realpath(await mkdtemp(join(tmpdir(), "deepseek-harness-mcp-")));
     workspace = join(temporaryRoot, "workspace");
     await mkdir(workspace);
     openBrowser.mockClear();
@@ -122,6 +123,7 @@ describe("RunManager Web orchestration", () => {
     expect(completed.sessionArchived).toBe(true);
     const baseline = await workspaceBaseline(service.webUrl!);
     expect(baseline.items.map((item) => item.workspaceId)).toEqual([registered.workspace.workspaceId]);
+    expect(baseline.items[0]?.sessionIds).toContain(started.sessionId);
     expect(baseline.archivedSessionIds).toContain(started.sessionId);
     expect((await fixtureState(service.webUrl!)).deleteRequests).toBe(0);
   });
