@@ -32,7 +32,7 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
   let urlSavedAt: string | null = null;
   let settingsUpdateId = 0;
   const server = new McpServer(
-    { name: "deepseek-harness-for-codex", version: "0.4.3" },
+    { name: "deepseek-harness-for-codex", version: "0.4.4" },
     {
       capabilities: { experimental: { "openai/settings": { readTool: "settings_read", updateTool: "settings_update" } } },
       instructions:
