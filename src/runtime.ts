@@ -69,6 +69,15 @@ export function resolveExternalWebService(env: NodeJS.ProcessEnv = process.env):
   return { webUrl: url.toString().replace(/\/$/, ""), authenticationUrl };
 }
 
+/** 可向设置面板展示的连接错误；只使用固定提示和 HTTP 状态，不包含请求地址或底层异常。 */
+export class ExternalWebServiceError extends Error {}
+
+function connectionError(error: unknown): ExternalWebServiceError {
+  return new ExternalWebServiceError(error instanceof Error && error.name === "TimeoutError"
+    ? "连接 DSH 超时，请检查服务状态后重试。"
+    : "无法连接 DSH，请确认服务正在运行且地址、端口正确。");
+}
+
 /** Verifies an existing Web service and returns its session cookie without exposing the token. */
 export async function authenticateExternalWebService(external: ExternalWebService, signal?: AbortSignal): Promise<string | null> {
   let cookie: string | null = null;
@@ -79,13 +88,16 @@ export async function authenticateExternalWebService(external: ExternalWebServic
         redirect: "manual",
         signal: signal === undefined ? AbortSignal.timeout(15_000) : AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
       });
-    } catch {
-      throw new Error("Could not authenticate with the existing Harness Web service.");
+    } catch (error) {
+      throw connectionError(error);
     }
     cookie = authentication.headers.get("set-cookie")?.split(";", 1)[0]?.trim() || null;
     await authentication.body?.cancel();
+    if (authentication.status === 401 || authentication.status === 403) {
+      throw new ExternalWebServiceError(`DSH 拒绝了认证（HTTP ${String(authentication.status)}），token 可能已失效或不匹配。请复制本次 dsh web 启动时输出的完整认证 URL。`);
+    }
     if (authentication.status !== 303 || cookie === null) {
-      throw new Error("The existing Harness Web authentication URL was rejected.");
+      throw new ExternalWebServiceError(`DSH 未返回预期的认证响应（HTTP ${String(authentication.status)}）。请确认地址指向 DSH，并使用本次启动的完整认证 URL。`);
     }
   }
 
@@ -95,14 +107,14 @@ export async function authenticateExternalWebService(external: ExternalWebServic
       ...(cookie === null ? {} : { headers: { cookie } }),
       signal: signal === undefined ? AbortSignal.timeout(15_000) : AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
     });
-  } catch {
-    throw new Error("Could not connect to the existing Harness Web service.");
+  } catch (error) {
+    throw connectionError(error);
   }
   await response.body?.cancel();
   if (response.status === 401) {
-    throw new Error("Existing Harness Web requires the full authentication URL printed by dsh web.");
+    throw new ExternalWebServiceError("DSH 拒绝了登录凭据（HTTP 401）。请复制本次 dsh web 启动时输出的完整认证 URL。");
   }
-  if (!response.ok) throw new Error(`Existing Harness Web service returned HTTP ${String(response.status)}.`);
+  if (!response.ok) throw new ExternalWebServiceError(`DSH 服务返回异常（HTTP ${String(response.status)}）。请检查服务状态后重试。`);
   return cookie;
 }
 

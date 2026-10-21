@@ -51,6 +51,8 @@ The panel also offers automatic archiving of successful new sessions and cleanup
 
 The authentication URL input is blank on every read; leaving it blank does not remove the saved credential. Input goes directly from the native UI to the plugin. Settings tools are app-only and hidden from the model; their results and errors never echo the token. The input is an ordinary text control. The Codex client still handles the input and may record local logs.
 
+When saving fails, the URL field description shows the reason and next step, distinguishing rejected authentication, connection failures, timeouts, unexpected responses, and local write failures. Codex may also show a generic error. A successful save clears the previous failure reason.
+
 A chat form may be automatically declined by the client before it appears; that does not mean the user declined it. Use native plugin settings without changing the permission policy.
 
 ## Daily use

@@ -27,6 +27,8 @@ function failure(error: unknown) {
 
 /** Creates the MCP tool surface over a local run manager. */
 export function createMcpServer(manager: RunManager = new RunManager()): McpServer {
+  // Codex 原生面板只显示通用错误，但会在更新后重读设置；保留脱敏原因供字段说明展示。
+  let lastSettingsError: string | null = null;
   const server = new McpServer(
     { name: "deepseek-harness-for-codex", version: "0.4.3" },
     {
@@ -81,7 +83,7 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _meta: { ui: { visibility: ["app"] } },
   }, async () => {
-    try { return result(settingsDefinition(await manager.connectionStatus())); } catch (error) { return failure(error); }
+    try { return result(settingsDefinition(await manager.connectionStatus(), lastSettingsError)); } catch (error) { return failure(error); }
   });
 
   server.registerTool("settings_update", {
@@ -97,8 +99,12 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
         ...(set.autoArchiveSuccessfulRuns === undefined ? {} : { autoArchiveSuccessfulRuns: set.autoArchiveSuccessfulRuns }),
         ...(set.mode === undefined ? {} : { mode: set.mode === connectionModes[1] ? "managed" as const : "external" as const }),
       }, extra.signal);
+      lastSettingsError = null;
       return result({ values: settingsValues(snapshot) });
-    } catch (error) { return failure(error); }
+    } catch (error) {
+      lastSettingsError = error instanceof Error ? error.message : "设置未保存，请重试。";
+      return failure(error);
+    }
   });
 
   server.registerTool(

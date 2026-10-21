@@ -310,4 +310,32 @@ describe("MCP server", () => {
     expect(await readFile(configPath, "utf8")).toBe(previous);
     expect(manager.listServices()).toHaveLength(0);
   });
+
+  it("shows a rejected token below the URL after the native client re-reads settings and clears it after a successful retry", async () => {
+    await client.callTool({ name: "settings_update", arguments: { set: { mode: "由插件启动" } } });
+    const configPath = join(temporaryRoot, "data", "connection.json");
+    const saved = await readFile(configPath, "utf8");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 401 }));
+    try {
+      const failed = await client.callTool({ name: "settings_update", arguments: { set: { url: "http://localhost:3080/?token=fixture-secret" } } });
+      expect(failed.isError).toBe(true);
+      for (let i = 0; i < 2; i++) {
+        const read = await client.callTool({ name: "settings_read", arguments: {} });
+        const definition = read.structuredContent as { schema: { properties: { url: { description: string } } }; values: { url: string } };
+        expect(definition.schema.properties.url.description).toContain("上次保存失败");
+        expect(definition.schema.properties.url.description).toContain("HTTP 401");
+        expect(definition.schema.properties.url.description).toContain("原配置未更改");
+        expect(definition.values.url).toBe("");
+        expect(JSON.stringify([failed, read])).not.toContain("fixture-secret");
+      }
+      expect(await readFile(configPath, "utf8")).toBe(saved);
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 303, headers: { "set-cookie": "auth=fixture-cookie" } }))
+        .mockResolvedValueOnce(new Response(null, { status: 200 }));
+      const retry = await client.callTool({ name: "settings_update", arguments: { set: { url: "http://localhost:3080/?token=fixture-secret" } } });
+      expect(retry.isError).not.toBe(true);
+      const read = await client.callTool({ name: "settings_read", arguments: {} });
+      expect(JSON.stringify(read)).not.toContain("上次保存失败");
+      expect(JSON.stringify([retry, read])).not.toContain("fixture-secret");
+    } finally { fetchMock.mockRestore(); }
+  });
 });
