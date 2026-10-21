@@ -27,13 +27,13 @@ export function settingsValues(snapshot: SetupSnapshot) {
 }
 
 /** 提供客户端原生控件所需的字段、有效值和分组，不生成网页或发起聊天表单。 */
-export function settingsDefinition(snapshot: SetupSnapshot, lastError: string | null = null) {
+export function settingsDefinition(snapshot: SetupSnapshot, lastError: string | null = null, urlSavedAt: string | null = null) {
   return {
     schema: {
       type: "object" as const,
       properties: {
         mode: { type: "string" as const, title: "连接方式", enum: [...connectionModes], description: "填写新的认证 URL 后会自动连接已有 DSH 服务。" },
-        url: { type: "string" as const, title: "连接或更新已有 DSH 的认证 URL", maxLength: 4096, description: `${lastError === null ? "" : `上次保存失败：${lastError}\n`}粘贴本次 dsh web 输出的完整本机地址（含 token），按 Enter 或移开焦点后验证并保存。空白不会清除旧设置；已保存凭据不回显。当前地址：${snapshot.externalWebUrl ?? "未连接已有服务"}。` },
+        url: { type: "string" as const, title: urlSavedAt === null ? "连接或更新已有 DSH 的认证 URL" : "✅ URL 已验证并保存", maxLength: 4096, description: `${lastError === null ? "" : `上次保存失败：${lastError}\n`}${urlSavedAt === null ? "" : `保存时间：${urlSavedAt}。输入框已清空，无需重复填写。\n`}粘贴本次 dsh web 输出的完整本机地址（含 token），按 Enter 或移开焦点后验证并保存。空白不会清除旧设置；已保存凭据不回显。当前地址：${snapshot.externalWebUrl ?? "未连接已有服务"}。` },
         autoArchiveSuccessfulRuns: { type: "boolean" as const, title: "成功后自动归档", description: "自动归档插件新建的成功会话，并清理插件新建的空工作区。" },
       },
     },

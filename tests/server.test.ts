@@ -270,7 +270,13 @@ describe("MCP server", () => {
       expect(saved.structuredContent).toMatchObject({ values: { mode: "复用已有 DSH", url: "", autoArchiveSuccessfulRuns: true } });
       expect(requests).toHaveLength(0);
       expect(JSON.stringify([requests, saved])).not.toContain("test-token");
-      expect(JSON.stringify(await client.callTool({ name: "settings_read", arguments: {} }))).not.toContain("test-token");
+      const confirmation = await client.callTool({ name: "settings_read", arguments: {} });
+      const urlField = (confirmation.structuredContent as { schema: { properties: { url: { title: string; description: string } } } }).schema.properties.url;
+      expect(urlField.title).toBe("✅ URL 已验证并保存");
+      expect(urlField.description).toMatch(/保存时间：\d{4}/);
+      expect(urlField.description).toContain(new URL(existing.webUrl!).origin);
+      expect(urlField.description).toContain("输入框已清空，无需重复填写");
+      expect(JSON.stringify(confirmation)).not.toContain("test-token");
       expect(JSON.parse(await readFile(join(temporaryRoot, "data", "connection.json"), "utf8"))).toEqual({ mode: "external", url: authUrl, autoArchiveSuccessfulRuns: true });
       const ready = await client.callTool({ name: "wait_setup", arguments: { timeoutMs: 2_000 } });
       expect(ready.structuredContent).toMatchObject({
@@ -337,5 +343,68 @@ describe("MCP server", () => {
       expect(JSON.stringify(read)).not.toContain("上次保存失败");
       expect(JSON.stringify([retry, read])).not.toContain("fixture-secret");
     } finally { fetchMock.mockRestore(); }
+  });
+
+  it.each([
+    { kind: "blank input", set: { url: "  " }, fails: false },
+    { kind: "archive change", set: { autoArchiveSuccessfulRuns: true }, fails: false },
+    { kind: "rejected replacement", set: { url: "http://localhost:3080/?token=fixture-rejected" }, fails: true },
+  ])("keeps URL success feedback through re-reads and replaces it on $kind", async ({ set, fails }) => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(null, { status: 303, headers: { "set-cookie": "auth=fixture-cookie" } }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValue(new Response(null, { status: 401 }));
+    try {
+      const initial = await client.callTool({ name: "settings_read", arguments: {} });
+      expect(JSON.stringify(initial)).not.toContain("✅ URL 已验证并保存");
+      const saved = await client.callTool({ name: "settings_update", arguments: { set: { url: "http://localhost:3080/?token=fixture-secret" } } });
+      expect(saved.isError).not.toBe(true);
+      for (let i = 0; i < 2; i++) {
+        const read = await client.callTool({ name: "settings_read", arguments: {} });
+        expect(JSON.stringify(read)).toContain("✅ URL 已验证并保存");
+        expect(JSON.stringify(read)).not.toContain("fixture-secret");
+        expect(read.structuredContent).toMatchObject({ values: { url: "" } });
+      }
+      const next = await client.callTool({ name: "settings_update", arguments: { set } });
+      expect(next.isError === true).toBe(fails);
+      const refreshed = await client.callTool({ name: "settings_read", arguments: {} });
+      expect(JSON.stringify(refreshed)).not.toContain("✅ URL 已验证并保存");
+      expect(JSON.stringify([next, refreshed])).not.toContain("fixture-rejected");
+      if (fails) expect(JSON.stringify(refreshed)).toContain("上次保存失败");
+      expect(JSON.parse(await readFile(join(temporaryRoot, "data", "connection.json"), "utf8"))).toMatchObject({ url: "http://localhost:3080/?token=fixture-secret" });
+    } finally { fetchMock.mockRestore(); }
+  });
+
+  it("does not restore an older URL confirmation after a newer settings operation", async () => {
+    const update = manager.updateConnectionSettings.bind(manager);
+    let resume: (() => void) | undefined;
+    let saved!: () => void;
+    const stored = new Promise<void>((resolve) => { saved = resolve; });
+    const release = new Promise<void>((resolve) => { resume = resolve; });
+    const delayed = vi.spyOn(manager, "updateConnectionSettings").mockImplementationOnce(async (...args) => {
+      const snapshot = await update(...args);
+      saved();
+      await release;
+      return snapshot;
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(null, { status: 303, headers: { "set-cookie": "auth=fixture-cookie" } }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const older = client.callTool({ name: "settings_update", arguments: { set: { url: "http://localhost:3080/?token=fixture-secret" } } });
+    try {
+      await stored;
+      const newer = await client.callTool({ name: "settings_update", arguments: { set: { autoArchiveSuccessfulRuns: true } } });
+      expect(newer.isError).not.toBe(true);
+      resume!();
+      expect((await older).isError).not.toBe(true);
+      const read = await client.callTool({ name: "settings_read", arguments: {} });
+      expect(JSON.stringify(read)).not.toContain("✅ URL 已验证并保存");
+      expect(read.structuredContent).toMatchObject({ values: { autoArchiveSuccessfulRuns: true } });
+    } finally {
+      resume?.();
+      await older;
+      delayed.mockRestore();
+      fetchMock.mockRestore();
+    }
   });
 });
