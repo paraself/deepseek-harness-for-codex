@@ -52,6 +52,43 @@ describe("native connection settings", () => {
     expect(await readFile(join(directory, "connection.json"), "utf8")).toBe(saved);
   });
 
+  it.each([
+    { kind: "rejected token", response: () => Promise.resolve(new Response(null, { status: 401 })), hint: /token.*失效/, detail: "HTTP 401" },
+    { kind: "unavailable service", response: () => Promise.reject(new TypeError("fetch failed: fixture-secret")), hint: /无法连接.*DSH/, detail: "端口" },
+    { kind: "timeout", response: () => Promise.reject(new DOMException("fixture-secret", "TimeoutError")), hint: /超时/, detail: "服务状态" },
+    { kind: "server error", response: () => Promise.resolve(new Response(null, { status: 503 })), hint: /认证响应/, detail: "HTTP 503" },
+    { kind: "missing cookie", response: () => Promise.resolve(new Response(null, { status: 303 })), hint: /认证响应/, detail: "HTTP 303" },
+  ])("explains $kind without leaking credentials or replacing the saved connection", async ({ response, hint, detail }) => {
+    await storeExternal();
+    const saved = await readFile(join(directory, "connection.json"), "utf8");
+    vi.spyOn(globalThis, "fetch").mockImplementation(response);
+    const updating = setup.updateSettings({ url: "http://localhost:3080/?token=fixture-secret" });
+    await expect(updating).rejects.toThrow(hint);
+    await expect(updating).rejects.toThrow(detail);
+    await expect(updating).rejects.toThrow("原配置未更改");
+    await expect(updating).rejects.not.toThrow("fixture-secret");
+    expect(await readFile(join(directory, "connection.json"), "utf8")).toBe(saved);
+  });
+
+  it.each(["not-a-url-fixture-secret", "https://example.com/?token=fixture-secret", "http://localhost:3080/"])("explains an invalid authentication URL without echoing it", async (url) => {
+    await storeExternal();
+    const saved = await readFile(join(directory, "connection.json"), "utf8");
+    const updating = setup.updateSettings({ url });
+    await expect(updating).rejects.toThrow(/完整.*本机.*认证 URL/);
+    await expect(updating).rejects.toThrow("token");
+    await expect(updating).rejects.not.toThrow("fixture-secret");
+    expect(await readFile(join(directory, "connection.json"), "utf8")).toBe(saved);
+  });
+
+  it("distinguishes local write failures from authentication failures", async () => {
+    const blockedDirectory = join(directory, "blocked");
+    await writeFile(blockedDirectory, "not a directory");
+    setup = new ConnectionSetup(blockedDirectory);
+    const updating = setup.updateSettings({ mode: "managed" });
+    await expect(updating).rejects.toThrow(/本地.*写入失败/);
+    await expect(updating).rejects.toThrow("目录权限");
+  });
+
   it("never requests a non-loopback URL", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
     await expect(setup.updateSettings({ url: "https://example.com/?token=fixture-rejected" })).rejects.toThrow("认证");

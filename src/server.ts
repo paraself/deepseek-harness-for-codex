@@ -27,8 +27,12 @@ function failure(error: unknown) {
 
 /** Creates the MCP tool surface over a local run manager. */
 export function createMcpServer(manager: RunManager = new RunManager()): McpServer {
+  // Codex 原生面板只显示通用错误，但会在更新后重读设置；保留脱敏原因供字段说明展示。
+  let lastSettingsError: string | null = null;
+  let urlSavedAt: string | null = null;
+  let settingsUpdateId = 0;
   const server = new McpServer(
-    { name: "deepseek-harness-for-codex", version: "0.4.3" },
+    { name: "deepseek-harness-for-codex", version: "0.4.4" },
     {
       capabilities: { experimental: { "openai/settings": { readTool: "settings_read", updateTool: "settings_update" } } },
       instructions:
@@ -81,7 +85,7 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _meta: { ui: { visibility: ["app"] } },
   }, async () => {
-    try { return result(settingsDefinition(await manager.connectionStatus())); } catch (error) { return failure(error); }
+    try { return result(settingsDefinition(await manager.connectionStatus(), lastSettingsError, urlSavedAt)); } catch (error) { return failure(error); }
   });
 
   server.registerTool("settings_update", {
@@ -91,14 +95,25 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _meta: { ui: { visibility: ["app"] } },
   }, async ({ set }, extra) => {
+    // 成功提示只对应本次非空 URL 的验证与保存，其他设置操作不能沿用旧确认。
+    const updateId = ++settingsUpdateId;
+    urlSavedAt = null;
     try {
       const snapshot = await manager.updateConnectionSettings({
         ...(set.url === undefined ? {} : { url: set.url }),
         ...(set.autoArchiveSuccessfulRuns === undefined ? {} : { autoArchiveSuccessfulRuns: set.autoArchiveSuccessfulRuns }),
         ...(set.mode === undefined ? {} : { mode: set.mode === connectionModes[1] ? "managed" as const : "external" as const }),
       }, extra.signal);
+      // 较早请求延迟完成时，不得覆盖后续设置操作的提示。
+      if (updateId === settingsUpdateId) {
+        lastSettingsError = null;
+        if (set.url?.trim()) urlSavedAt = new Date().toLocaleString("zh-CN", { hour12: false });
+      }
       return result({ values: settingsValues(snapshot) });
-    } catch (error) { return failure(error); }
+    } catch (error) {
+      if (updateId === settingsUpdateId) lastSettingsError = error instanceof Error ? error.message : "设置未保存，请重试。";
+      return failure(error);
+    }
   });
 
   server.registerTool(

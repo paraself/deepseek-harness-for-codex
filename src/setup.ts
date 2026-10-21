@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ElicitRequestFormParams, ElicitResult } from "@modelcontextprotocol/sdk/types.js";
-import { authenticateExternalWebService, resolveAutoArchiveSuccessfulRuns, resolveExternalWebService } from "./runtime.js";
+import { authenticateExternalWebService, ExternalWebServiceError, resolveAutoArchiveSuccessfulRuns, resolveExternalWebService } from "./runtime.js";
 
 export type ConnectionChoice =
   | { mode: "managed"; autoArchiveSuccessfulRuns: boolean }
@@ -126,15 +126,16 @@ export class ConnectionSetup {
           const external = resolveExternalWebService({ DSH_MCP_WEB_URL: url });
           if (external?.authenticationUrl == null) throw new Error("Authentication URL required.");
           await authenticateExternalWebService(external, signal);
-        } catch {
+        } catch (error) {
           if (signal?.aborted) throw new Error("The settings update was cancelled.");
-          throw new Error("认证失败，设置未保存。请填写本次 dsh web 启动时输出的完整本机认证 URL。");
+          const reason = error instanceof ExternalWebServiceError ? error.message : "认证 URL 格式不正确，请填写本次 dsh web 输出的完整本机认证 URL（含 ?token=…）。";
+          throw new Error(`${reason}设置未保存，原配置未更改。`);
         }
       }
       choice = { mode, url: authenticationUrl, autoArchiveSuccessfulRuns };
     }
     if (signal?.aborted) throw new Error("The settings update was cancelled.");
-    try { await this.save(choice); } catch { throw new Error("Could not save DeepSeek Harness settings locally."); }
+    try { await this.save(choice); } catch { throw new Error("本地设置写入失败，请检查数据目录权限和磁盘空间后重试。设置未保存，原配置未更改。"); }
     return this.state();
   }
 
