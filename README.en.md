@@ -16,6 +16,7 @@ Let Codex connect to or start local [DeepSeek Harness](https://github.com/deepse
 
 - Connect to existing DSH Web or let the plugin start a local service.
 - Run tasks in visible sessions; create new sessions or continue completed conversations.
+- Mark Sessions created by this plugin with a small Codex icon in the DSH sidebar without consuming the status dot, so schedule clocks and IM avatars still show.
 - Optionally archive successful new sessions and remove empty workspace registrations created by the plugin.
 - The plugin includes the MCP server and delegation workflow; Codex independently verifies the result.
 
@@ -108,6 +109,8 @@ Restart Codex after updating to load the new code. The following reference secti
 | `DSH_MCP_NPX_COMMAND` | `npx` (`npx.cmd` on Windows) | Alternate npx path. |
 | `DSH_MCP_WEB_URL` | unset | Full loopback authentication URL overriding the saved connection choice. |
 | `DSH_MCP_AUTO_ARCHIVE` | unset | `true`/`false` override for the archive and cleanup switch; off by default. |
+| `DSH_MCP_DSH_HOME` | `~/.dsh` | DSH home that receives the Session-mark plugin when connecting to an existing DSH. |
+| `DSH_MCP_EXTERNAL_SESSION_MARK` | `true` | Whether an existing DSH may receive the Session-mark plugin; set `false` to disable. |
 | `DSH_PERMISSION_MODE` | `workspace-write` | Permission mode for plugin-managed Harness. |
 | `DEEPSEEK_BASE_URL` | provider default | Optional DeepSeek-compatible API endpoint. |
 
@@ -116,6 +119,8 @@ Environment variables override corresponding settings. Choices remain in `connec
 Automatic archiving applies only to successful new sessions; failed, cancelled, and reused sessions are not archived. Cleanup then removes only workspace registrations **created by the current MCP process**, requiring every session in the workspace to be archived and no running sessions or active plugin tasks. Existing workspaces and those with unarchived sessions remain. Removal affects only sidebar registration: directories, files, and session history remain. Archive or cleanup errors are recorded in `archiveError` without changing a successful run's status.
 
 DSH has no atomic delete-if-empty operation; a session created by another client between checking and deletion may become ungrouped.
+
+The Session mark is drawn by a small DSH browser plugin (DSH 0.2 or later) shipped in `plugins/deepseek-harness/mark/`. A plugin-managed DSH mounts it automatically. When connecting to an existing DSH, the plugin is copied to the DSH home's `codex-session-mark/current/`, and a marked managed block is appended to that home's `cordis.patch.yml` (the previous file is backed up). DSH applies it live when HMR is enabled; otherwise it takes effect on the next restart. Upgrades overwrite the files under `current/` while the patch row stays unchanged; a running DSH may keep the previous client bundle until it restarts. It adds a 20px leading indent inside the Session title and draws the icon there, leaving the row’s status cell free and never changing the visible title text, search results, or session data. With automatic archiving on, a successful Session is archived and hidden immediately; the icon only applies to Sessions still visible in the list.
 
 `start_run` can modify files and requires an existing absolute workspace, resolving symlinks. Use `DSH_MCP_WORKSPACE_ROOTS` to restrict access; processes are launched with argv. Managed Web binds only to loopback and selects a free port; Harness child-process telemetry is disabled by default.
 

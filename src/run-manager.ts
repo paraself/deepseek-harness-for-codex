@@ -13,13 +13,25 @@ import {
   type HarnessCommand,
 } from "./runtime.js";
 import { ConnectionSetup, type ConnectionSettingsUpdate, type SetupInputHandler, type SetupSnapshot } from "./setup.js";
+import {
+  detectSessionMark,
+  installHomePatch,
+  installSessionMarkFiles,
+  readSessionMarkSupport,
+  resolveExternalDshHome,
+  resolveExternalSessionMark,
+  resolveSessionMarkSource,
+  SESSION_MARK_TITLE,
+  sessionTitle,
+  supportsSessionMark,
+  type SessionMarkFiles,
+} from "./session-mark.js";
 import type { RunSnapshot, RunStatus, ServiceSnapshot, ServiceStatus, StartRunInput, StartServiceInput } from "./types.js";
 
 const READY_PATTERN = /dsh web: (http:\/\/[^\s]+)/;
 const STARTUP_TIMEOUT_MS = 120_000;
 const CANCEL_GRACE_MS = 5_000;
 const MAX_LOG_CHARACTERS = 100_000;
-const TITLE_PREFIX = "[codex] ";
 // ponytail: 最多等待两分钟；若标题模型的超时更长，再按实际配置延长。
 const TITLE_WAIT_MS = 120_000;
 
@@ -31,6 +43,8 @@ interface ServiceRecord {
   apiUrl: string | null;
   browserOpened: boolean;
   browserError: string | null;
+  /** Whether the DSH instance mounted the Codex row mark (titles then use the invisible marker). */
+  sessionMark: boolean;
   startedAt: Date;
   stoppedAt: Date | null;
   child: ChildProcess | null;
@@ -90,6 +104,12 @@ export interface RunManagerOptions {
   commandFactory?: (input: { workspace: string; serviceHome: string }) => HarnessCommand;
   spawnProcess?: (command: HarnessCommand) => ChildProcess;
   openBrowser?: (url: string) => Promise<void>;
+  /** DSH home that hosts the external browser plugin; defaults to ~/.dsh. */
+  dshHome?: string;
+  /** Whether an existing DSH may receive the managed browser plugin; defaults to true. */
+  externalSessionMark?: boolean;
+  /** Companion package directory; null disables the mark (also used by tests). */
+  sessionMarkSource?: string | null;
 }
 
 function defaultSpawnProcess(command: HarnessCommand): ChildProcess {
@@ -163,6 +183,9 @@ export class RunManager {
   private readonly commandFactory: NonNullable<RunManagerOptions["commandFactory"]>;
   private readonly spawnProcess: NonNullable<RunManagerOptions["spawnProcess"]>;
   private readonly openBrowserImpl: NonNullable<RunManagerOptions["openBrowser"]>;
+  private readonly dshHome: string;
+  private readonly externalSessionMark: boolean;
+  private readonly sessionMarkSource: string | null;
 
   public constructor(options: RunManagerOptions = {}) {
     this.dataDirectory = resolve(options.dataDirectory ?? resolveDataDirectory());
@@ -172,6 +195,9 @@ export class RunManager {
     this.commandFactory = options.commandFactory ?? ((input) => buildHarnessWebCommand(input));
     this.spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
     this.openBrowserImpl = options.openBrowser ?? defaultOpenBrowser;
+    this.dshHome = resolve(options.dshHome ?? resolveExternalDshHome());
+    this.externalSessionMark = options.externalSessionMark ?? resolveExternalSessionMark();
+    this.sessionMarkSource = options.sessionMarkSource === undefined ? resolveSessionMarkSource() : options.sessionMarkSource;
     this.connectionSetup = new ConnectionSetup(this.dataDirectory, options.externalWebUrl);
   }
 
@@ -405,6 +431,7 @@ export class RunManager {
       apiUrl: external.webUrl,
       browserOpened: false,
       browserError: null,
+      sessionMark: false,
       startedAt: new Date(),
       stoppedAt: null,
       child: null,
@@ -414,6 +441,7 @@ export class RunManager {
     };
     this.services.set(service.serviceId, service);
     this.serviceByWorkspace.set(workspace, service.serviceId);
+    if (this.externalSessionMark) service.sessionMark = await this.enableExternalSessionMark(service);
     return service;
   }
 
@@ -422,6 +450,8 @@ export class RunManager {
     const workspaceKey = createHash("sha256").update(workspace).digest("hex").slice(0, 24);
     const serviceHome = join(this.dataDirectory, "services", workspaceKey);
     await mkdir(serviceHome, { recursive: true, mode: 0o700 });
+    const mark = await this.prepareSessionMark(serviceHome);
+    if (mark !== null) await installHomePatch(serviceHome, mark.entryPath);
     const command = this.commandFactory({ workspace, serviceHome });
     const child = this.spawnProcess(command);
     const service: ServiceRecord = {
@@ -432,6 +462,7 @@ export class RunManager {
       apiUrl: null,
       browserOpened: false,
       browserError: null,
+      sessionMark: false,
       startedAt: new Date(),
       stoppedAt: null,
       child,
@@ -479,6 +510,7 @@ export class RunManager {
       if (external === undefined) throw new Error("Harness Web service did not provide a URL.");
       service.cookie = await authenticateExternalWebService(external);
       service.apiUrl = external.webUrl;
+      if (mark !== null) service.sessionMark = await this.waitForSessionMark(service, 1_500);
       return service;
     } catch (error) {
       this.serviceByWorkspace.delete(workspace);
@@ -630,6 +662,41 @@ export class RunManager {
     });
   }
 
+  /** Prepares the companion package inside the DSH home that will load it. */
+  private async prepareSessionMark(home: string): Promise<SessionMarkFiles | null> {
+    if (this.sessionMarkSource === null) return null;
+    return installSessionMarkFiles(this.sessionMarkSource, home);
+  }
+
+  /**
+   * Installs the shared browser plugin into an existing DSH home and waits for
+   * its live reload. Any refusal or timeout falls back to the visible prefix.
+   */
+  private async enableExternalSessionMark(service: ServiceRecord): Promise<boolean> {
+    if (service.webUrl === null) return false;
+    try {
+      const support = await readSessionMarkSupport(service.webUrl, service.cookie);
+      if (support === null || support.version === null || !supportsSessionMark(support.version)) return false;
+      if (support.loaded) return true;
+      const files = await this.prepareSessionMark(this.dshHome);
+      if (files === null) return false;
+      if (!await installHomePatch(this.dshHome, files.entryPath)) return false;
+      return await this.waitForSessionMark(service);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Waits for the companion plugin to appear in the DSH boot graph. */
+  private async waitForSessionMark(service: ServiceRecord, timeoutMs = 8_000): Promise<boolean> {
+    if (service.webUrl === null) return false;
+    try {
+      return await detectSessionMark(service.webUrl, service.cookie, timeoutMs);
+    } catch {
+      return false;
+    }
+  }
+
   private async prefixSessionTitle(service: ServiceRecord, sessionId: string): Promise<void> {
     const deadline = Date.now() + TITLE_WAIT_MS;
     let fallback: string | undefined;
@@ -649,7 +716,7 @@ export class RunManager {
           if (event.type === "session/title" && typeof event.data === "object" && event.data !== null) {
             const { title, source } = event.data as { title?: unknown; source?: { kind?: string } };
             if (typeof title === "string" && source?.kind === "provider") {
-              await this.rpc(service, "session/rename", { request: { sessionId, title: `${TITLE_PREFIX}${title}` } });
+              await this.renameTitle(service, sessionId, title);
               return;
             }
             if (typeof title === "string" && source?.kind === "fallback") fallback = title;
@@ -663,11 +730,26 @@ export class RunManager {
     }
     if (fallback !== undefined && service.status === "running") {
       try {
-        await this.rpc(service, "session/rename", { request: { sessionId, title: `${TITLE_PREFIX}${fallback}` } });
+        await this.renameTitle(service, sessionId, fallback);
       } catch {
         // 重命名失败时保留 DSH 原标题。
       }
     }
+  }
+
+  /**
+   * Renames a Session with the icon marker, then verifies DSH kept it. A future
+   * title sanitizer may strip the invisible marker; the visible prefix keeps
+   * the provenance instead of leaving the Session unmarked.
+   */
+  private async renameTitle(service: ServiceRecord, sessionId: string, title: string): Promise<void> {
+    const renamed = await this.rpc<{ title?: string }>(service, "session/rename", {
+      request: { sessionId, title: sessionTitle(service.sessionMark, title) },
+    });
+    if (!service.sessionMark) return;
+    if (typeof renamed.title !== "string" || renamed.title.startsWith(SESSION_MARK_TITLE)) return;
+    service.sessionMark = false;
+    await this.rpc(service, "session/rename", { request: { sessionId, title: sessionTitle(false, title) } });
   }
 
   private async rpc<T>(service: ServiceRecord, method: string, args: Record<string, unknown>): Promise<T> {

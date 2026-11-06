@@ -1,6 +1,6 @@
 {
   "name": "deepseek-harness-for-codex",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "description": "Codex plugin for delegating work to visible local DeepSeek Harness sessions and independently reviewing the results.",
   "type": "module",
   "bin": {
@@ -8,6 +8,7 @@
   },
   "files": [
     "plugins/deepseek-harness/dist/",
+    "plugins/deepseek-harness/mark/",
     "README.md",
     "README.en.md",
     "assets/",

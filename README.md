@@ -16,6 +16,7 @@
 
 - 连接已有 DSH Web，或由插件启动本地服务。
 - 在可见会话中执行任务，支持新建会话和继续已完成的对话。
+- 在 DSH 会话列表里用 Codex 小图标标记本插件创建的会话，不占用状态点，也能和定时任务/IM 头像并存。
 - 可选：成功后自动归档新建会话，并清理插件新建的空工作区登记。
 - 插件包含 MCP 服务和委派工作流；Codex 负责独立验收。
 
@@ -108,6 +109,8 @@ codex plugin add deepseek-harness@deepseek-harness-for-codex
 | `DSH_MCP_NPX_COMMAND` | `npx`（Windows 为 `npx.cmd`） | 自定义 npx 路径。 |
 | `DSH_MCP_WEB_URL` | 未设置 | 用完整回环认证 URL 覆盖保存的连接选择。 |
 | `DSH_MCP_AUTO_ARCHIVE` | 未设置 | `true`/`false` 覆盖保存的归档与清理开关，默认关闭。 |
+| `DSH_MCP_DSH_HOME` | `~/.dsh` | 连接已有 DSH 时，接收会话图标插件的 DSH home。 |
+| `DSH_MCP_EXTERNAL_SESSION_MARK` | `true` | 是否允许把会话图标插件安装到已有 DSH；设为 `false` 可关闭。 |
 | `DSH_PERMISSION_MODE` | `workspace-write` | 插件启动的 Harness 的权限模式。 |
 | `DEEPSEEK_BASE_URL` | 服务商默认值 | 可选的 DeepSeek 兼容 API 地址。 |
 
@@ -116,6 +119,8 @@ codex plugin add deepseek-harness@deepseek-harness-for-codex
 开启自动归档后，仅归档成功的新建会话，失败、取消和复用的会话不归档。随后只清理**当前 MCP 进程自己创建**的工作区登记，要求其中所有会话均已归档，且没有运行中会话或本插件活动任务。原有工作区及仍有未归档会话的工作区保留。清理只移除侧栏登记，磁盘目录、文件和会话历史保留；归档或清理失败记录在 `archiveError`，不改变运行的成功状态。
 
 DSH 尚无原子的“空时删除”接口；其他客户端在检查与删除之间创建的会话可能移到未分组。
+
+会话图标由一个很小的 DSH 浏览器插件绘制（需要 DSH 0.2 或更新版本），代码随本插件发布在 `plugins/deepseek-harness/mark/`。插件启动 DSH 时自动挂载；连接已有 DSH 时，会把这个插件复制到 `DSH home` 的 `codex-session-mark/current/`，并在同一 home 的 `cordis.patch.yml` 末尾写入一段带标记的托管配置（原文件先备份）；DSH 开启 HMR 时热加载，否则下次重启生效。升级插件时会覆盖 `current/` 里的文件，patch 行保持不变；如果 DSH 当时正在运行，图标客户端 bundle 可能要在 DSH 重启后才换成新版本。只在会话标题左侧增加 20px 缩进并绘制图标，不占用行首状态格，也不改变标题的可见文字、搜索结果或会话数据。自动归档开启后，会话成功后立即归档并从列表隐藏；图标只对列表里可见的会话生效。
 
 `start_run` 可修改文件，要求已存在的绝对工作区路径并解析符号链接。可用 `DSH_MCP_WORKSPACE_ROOTS` 限制范围；进程通过 argv 启动。插件启动的 Web 服务仅监听回环地址、自动选端口，Harness 子进程默认关闭遥测。
 
