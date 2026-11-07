@@ -311,7 +311,7 @@ describe("RunManager Web orchestration", () => {
     expect(list.items.some((item) => item.sessionId === started.sessionId)).toBe(true);
   });
 
-  it("does not archive failed or cancelled runs", async () => {
+  it("archives cancelled runs and keeps failed runs visible", async () => {
     await mkdir(join(temporaryRoot, "data"));
     await writeFile(join(temporaryRoot, "data", "connection.json"), JSON.stringify({ mode: "managed", autoArchiveSuccessfulRuns: true }));
 
@@ -323,11 +323,12 @@ describe("RunManager Web orchestration", () => {
     const cancelled = await manager.start({ task: "long task", workspace });
     const cancelledResult = await manager.cancel(cancelled.runId);
     expect(cancelledResult.status).toBe("cancelled");
-    expect(cancelledResult.sessionArchived).toBe(false);
+    expect(cancelledResult.sessionArchived).toBe(true);
     const baseline = await workspaceBaseline(failed.webUrl!);
     expect(baseline.items).toHaveLength(1);
     expect(baseline.items[0]?.sessionIds).toEqual([failed.sessionId, cancelled.sessionId]);
-    expect(baseline.archivedSessionIds).toEqual([]);
+    expect(baseline.archivedSessionIds).toEqual([cancelled.sessionId]);
+    // The failed session is still visible, so the shared workspace is not cleaned up.
     expect((await fixtureState(failed.webUrl!)).deleteRequests).toBe(0);
   });
 

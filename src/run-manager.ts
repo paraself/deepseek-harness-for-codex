@@ -561,7 +561,7 @@ export class RunManager {
         run.status = "succeeded";
         run.finishedAt = new Date();
       }
-      if (run.status === "succeeded" && !run.sessionReused) {
+      if ((run.status === "succeeded" || run.status === "cancelled") && !run.sessionReused) {
         const choice = await this.connectionSetup.getChoice();
         if (choice?.autoArchiveSuccessfulRuns) {
           try {

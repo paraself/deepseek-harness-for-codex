@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ElicitRequestFormParams, ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateExternalWebService, ExternalWebServiceError, resolveAutoArchiveSuccessfulRuns, resolveExternalWebService } from "./runtime.js";
 
+/** `autoArchiveSuccessfulRuns` 是兼容旧配置的键名；该开关现在同时覆盖成功和取消的新会话。 */
 export type ConnectionChoice =
   | { mode: "managed"; autoArchiveSuccessfulRuns: boolean }
   | { mode: "external"; url: string; autoArchiveSuccessfulRuns: boolean };
@@ -150,7 +151,7 @@ export class ConnectionSetup {
           properties: {
             mode: { type: "string", title: "连接方式", enum: ["external", "managed"], enumNames: ["复用已有 DSH", "由插件启动新服务（自动选端口）"], default: current?.mode ?? "external" },
             url: { type: "string", title: "已有 DSH 的完整认证 URL", description: "仅复用已有服务时填写，例如 http://127.0.0.1:3080/?token=...", maxLength: 4096 },
-            autoArchiveSuccessfulRuns: { type: "boolean", title: "成功后自动归档新建会话，并清理插件新建的空工作区", default: current?.autoArchiveSuccessfulRuns ?? false },
+            autoArchiveSuccessfulRuns: { type: "boolean", title: "完成后自动归档新建会话（成功或取消），并清理插件新建的空工作区", default: current?.autoArchiveSuccessfulRuns ?? false },
           },
           required: ["mode", "autoArchiveSuccessfulRuns"],
         },
